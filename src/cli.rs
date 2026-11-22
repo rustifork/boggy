@@ -1,8 +1,30 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "boggy", version, about = "Lightweight agentless IoT network scanner")]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
+    #[command(flatten)]
+    pub scan: ScanOpts,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum Command {
+    /// Download the latest CVE database
+    UpdateDb {
+        /// Destination path (default: ~/.boggy/cves.json)
+        #[arg(long)]
+        out: Option<String>,
+        /// Source URL
+        #[arg(long, default_value = "https://raw.githubusercontent.com/rustifork/boggy/main/db/cves.json")]
+        url: String,
+    },
+}
+
+#[derive(Parser, Debug, Clone)]
+pub struct ScanOpts {
     /// Target CIDR, e.g. 192.168.1.0/24
     #[arg(short, long)]
     pub target: Option<String>,
@@ -15,6 +37,10 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub deep: bool,
 
+    /// Passive mode: discovery only, no active probes
+    #[arg(long, default_value_t = false)]
+    pub passive: bool,
+
     /// Output format: text or json
     #[arg(short, long, default_value = "text")]
     pub output: String,
@@ -26,6 +52,10 @@ pub struct Cli {
     /// Concurrent workers
     #[arg(short = 'j', long, default_value_t = 64)]
     pub threads: usize,
+
+    /// Max concurrent connections (rate limit). 0 = auto
+    #[arg(long, default_value_t = 0)]
+    pub rate_limit: usize,
 
     /// Per-probe timeout in ms
     #[arg(long, default_value_t = 800)]

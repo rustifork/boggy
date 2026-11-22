@@ -15,6 +15,19 @@ struct CveEntry {
 static CVE_DB: &str = include_str!("../../db/cves.json");
 
 fn load() -> Vec<CveEntry> {
+    let mut candidates: Vec<String> = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(format!("{}/.boggy/cves.json", home));
+    }
+    candidates.push("db/cves.json".to_string());
+    candidates.push("/etc/boggy/cves.json".to_string());
+    for path in &candidates {
+        if let Ok(data) = std::fs::read_to_string(path) {
+            if let Ok(v) = serde_json::from_str::<Vec<CveEntry>>(&data) {
+                return v;
+            }
+        }
+    }
     serde_json::from_str(CVE_DB).unwrap_or_default()
 }
 
