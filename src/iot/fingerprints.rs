@@ -23,6 +23,15 @@ pub fn fingerprint(port: u16, banner: Option<&str>, service: Option<&str>) -> Op
     if b.contains("busybox") { return Some(Fingerprint { device_type: "embedded linux" }); }
     if b.contains("dnsmasq") { return Some(Fingerprint { device_type: "router/dns" }); }
     if b.contains("mqtt") || s == "mqtt" { return Some(Fingerprint { device_type: "mqtt broker" }); }
+    if b.contains("tp-link") || b.contains("tplink") { return Some(Fingerprint { device_type: "router/switch" }); }
+    if b.contains("xiaomi") { return Some(Fingerprint { device_type: "smart home hub" }); }
+    if b.contains("tuya") { return Some(Fingerprint { device_type: "smart home device" }); }
+    if b.contains("shelly") { return Some(Fingerprint { device_type: "smart relay" }); }
+    if b.contains("espressif") || b.contains("esp32") || b.contains("esp8266") { return Some(Fingerprint { device_type: "esp embedded" }); }
+    if b.contains("mikrotik") { return Some(Fingerprint { device_type: "router" }); }
+    if b.contains("ubiquiti") || b.contains("unifi") { return Some(Fingerprint { device_type: "network appliance" }); }
+    if b.contains("synology") { return Some(Fingerprint { device_type: "nas" }); }
+    if b.contains("qnap") { return Some(Fingerprint { device_type: "nas" }); }
     if port == 554 { return Some(Fingerprint { device_type: "ip camera (rtsp)" }); }
     if port == 7547 { return Some(Fingerprint { device_type: "cpe/router (tr069)" }); }
     if port == 5683 { return Some(Fingerprint { device_type: "coap device" }); }

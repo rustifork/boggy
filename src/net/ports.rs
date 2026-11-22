@@ -80,7 +80,9 @@ fn guess_service(port: u16) -> Option<String> {
         5357 => "wsd", 5683 => "coap", 5900 => "vnc", 6379 => "redis",
         7547 => "tr069/cwmp", 8000 => "http", 8080 => "http", 8081 => "http",
         8443 => "https", 8883 => "mqtts", 8888 => "http", 9000 => "http",
-        9100 => "jetdirect", 10000 => "webmin", 27017 => "mongo", _ => "",
+        8082 => "http", 8083 => "http", 8090 => "http", 9090 => "http",
+        9100 => "jetdirect", 10000 => "webmin", 27017 => "mongo",
+        5001 => "synology", 50001 => "synology", _ => "",
     };
     if name.is_empty() { None } else { Some(name.to_string()) }
 }

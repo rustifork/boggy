@@ -2,6 +2,8 @@
 
 Lightweight, agentless IoT network vulnerability scanner. Runs on Raspberry Pi and other small Linux devices.
 
+> Boggy is neither affiliated with, nor used by, nor made by the Iranian APT group Boggy Serpens.
+
 ## Features
 
 - Local subnet auto-detection (or manual CIDR)
@@ -37,3 +39,11 @@ sudo ./target/release/boggy --target 192.168.1.0/24
 ## Safety
 
 Only scan networks you own or are authorized to test.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+Dual-licensed under MIT or Apache-2.0.

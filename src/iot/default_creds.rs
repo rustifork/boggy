@@ -33,6 +33,8 @@ pub fn http_default_creds(ip: std::net::Ipv4Addr, port: u16, timeout_ms: u64) ->
         ("admin","admin"), ("admin",""), ("admin","1234"), ("admin","password"),
         ("root","root"), ("root",""), ("root","admin"), ("user","user"),
         ("admin","12345"), ("guest","guest"), ("admin","admin123"),
+        ("admin","123456"), ("ubnt","ubnt"), ("pi","raspberry"),
+        ("admin","0000"), ("service","service"), ("support","support"),
     ];
     for (u, p) in pairs.iter() {
         let cred = format!("{}:{}", u, p);

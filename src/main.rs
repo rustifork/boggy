@@ -208,7 +208,11 @@ fn main() {
     let rx = Arc::new(Mutex::new(rx));
     let (res_tx, res_rx) = mpsc::channel::<HostResult>();
 
-    let workers = cli.threads.max(1);
+    let workers = if cli.threads == 64 {
+        (all_hosts.len() / 4).clamp(8, 128)
+    } else {
+        cli.threads.max(1)
+    };
     let mut handles = Vec::new();
     for _ in 0..workers {
         let rx = rx.clone();
