@@ -14,7 +14,7 @@ struct CveEntry {
 
 static CVE_DB: &str = include_str!("../../db/cves.json");
 
-pub fn load() -> Vec<CveEntry> {
+fn load() -> Vec<CveEntry> {
     serde_json::from_str(CVE_DB).unwrap_or_default()
 }
 

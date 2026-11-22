@@ -6,15 +6,12 @@ use std::time::Duration;
 pub struct MdnsEntry {
     pub ip: Ipv4Addr,
     pub name: Option<String>,
-    pub service: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct SsdpEntry {
     pub ip: Ipv4Addr,
     pub location: Option<String>,
-    pub server: Option<String>,
-    pub st: Option<String>,
 }
 
 pub fn tcp_alive(ip: Ipv4Addr, timeout_ms: u64) -> bool {
@@ -69,7 +66,7 @@ pub fn mdns_scan(timeout_ms: u64) -> Vec<MdnsEntry> {
                         if token.len() > 4 { name = Some(token.to_string()); break; }
                     }
                 }
-                out.push(MdnsEntry { ip, name, service: None });
+                out.push(MdnsEntry { ip, name });
             }
             Err(_) => break,
         }
@@ -102,15 +99,11 @@ pub fn ssdp_scan(timeout_ms: u64) -> Vec<SsdpEntry> {
                 };
                 let text = String::from_utf8_lossy(&buf[..n]).to_string();
                 let mut location = None;
-                let mut server = None;
-                let mut st = None;
                 for line in text.lines() {
                     let l = line.trim();
                     if let Some(v) = l.strip_prefix("LOCATION:") { location = Some(v.trim().to_string()); }
-                    else if let Some(v) = l.strip_prefix("SERVER:") { server = Some(v.trim().to_string()); }
-                    else if let Some(v) = l.strip_prefix("ST:") { st = Some(v.trim().to_string()); }
                 }
-                out.push(SsdpEntry { ip, location, server, st });
+                out.push(SsdpEntry { ip, location });
             }
             Err(_) => break,
         }
