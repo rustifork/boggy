@@ -34,7 +34,24 @@ cargo build --release --target aarch64-unknown-linux-gnu
 ```sh
 sudo ./target/release/boggy --target 192.168.1.0/24
 ./target/release/boggy --auto --deep --output json --out report.json
+./target/release/boggy --target 192.168.1.0/24 --passive
+./target/release/boggy --target 192.168.1.0/24 --rate-limit 32 --timeout 500
+./target/release/boggy update-db
 ```
+
+## Concurrency & rate limiting
+
+Boggy uses a bounded worker pool over hosts; each host scans its ports sequentially.
+A counting semaphore caps concurrent connections (`--rate-limit`, default `threads*2`)
+to avoid overwhelming fragile IoT devices. Use `--passive` for discovery-only scanning
+(mDNS/SSDP/ARP) with no active probes.
+
+## CVE database
+
+Embedded at build time. Refresh with `boggy update-db` (downloads to `~/.boggy/cves.json`,
+used automatically if present). Boggy does not replace a full vulnerability scanner; it
+detects the most common IoT flaws and weak configurations. Coverage is intentionally
+limited and focused on IoT.
 
 ## Safety
 
