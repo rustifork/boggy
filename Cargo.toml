@@ -1,0 +1,21 @@
+[package]
+name = "boggy"
+version = "0.1.0"
+edition = "2021"
+authors = ["rustifork"]
+license = "MIT"
+description = "Lightweight agentless IoT network vulnerability scanner for Raspberry Pi"
+repository = "https://github.com/rustifork/boggy"
+readme = "README.md"
+
+[dependencies]
+clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+serde = { version = "1", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
