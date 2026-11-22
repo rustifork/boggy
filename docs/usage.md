@@ -34,4 +34,4 @@ cargo build --release --target aarch64-unknown-linux-gnu
 scp target/aarch64-unknown-linux-gnu/release/boggy pi@host:/usr/local/bin/
 ```
 
-Run with sudo for ARP enrichment (optional): `sudo boggy --auto`.
+No root privileges are required (TCP connect + multicast discovery).

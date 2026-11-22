@@ -9,6 +9,7 @@ repository = "https://github.com/rustifork/boggy"
 readme = "README.md"
 
 [dependencies]
+ureq = { version = "2", optional = true, default-features = false, features = ["tls"] }
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
@@ -19,3 +20,7 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+[features]
+default = ["https"]
+https = ["dep:ureq"]

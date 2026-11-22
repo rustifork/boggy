@@ -5,7 +5,7 @@
   {"id":"CVE-2018-9995","cve":"CVE-2018-9995","severity":"critical","title":"DVR auth bypass (getUsers)","detail":"DVR credential disclosure","ports":[80],"keywords":["dvr"]},
   {"id":"CVE-2019-11510","cve":"CVE-2019-11510","severity":"critical","title":"Pulse Secure VPN arbitrary file read","detail":"Pulse Connect Secure file read","ports":[443],"keywords":["pulse"]},
   {"id":"CVE-2020-5902","cve":"CVE-2020-5902","severity":"critical","title":"F5 BIG-IP TMUI RCE","detail":"F5 BIG-IP TMUI RCE","ports":[443,8443],"keywords":["big-ip","f5"]},
-  {"id":"CVE-2017-17215","cve":"CVE-2017-17215","severity":"critical","title":"Huawei HG532 command injection","detail":"Huawei router command injection","ports":[37215,80],"keywords":["huawei","hg532"]},
+  {"id":"CVE-2017-17215","cve":"CVE-2017-17215","severity":"critical","title":"Huawei HG532 command injection","detail":"Huawei HG532 router command injection","ports":[37215],"keywords":["hg532"]},
   {"id":"CVE-2014-8361","cve":"CVE-2014-8361","severity":"critical","title":"Realtek SDK miniigd UPnP command injection","detail":"Realtek miniigd SOAP command injection","ports":[49152,52869],"keywords":["miniigd","realtek"]},
   {"id":"CVE-2020-10987","cve":"CVE-2020-10987","severity":"critical","title":"Tenda AC15 command injection","detail":"Tenda router command injection","ports":[80],"keywords":["tenda"]},
   {"id":"CVE-2021-20090","cve":"CVE-2021-20090","severity":"critical","title":"Arcadyan routers auth bypass","detail":"Buffalo/ Arcadyan auth bypass","ports":[80],"keywords":["arcadyan"]},

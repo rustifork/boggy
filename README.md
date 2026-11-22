@@ -10,7 +10,7 @@ Lightweight, agentless IoT network vulnerability scanner. Runs on Raspberry Pi a
 - Host discovery: TCP connect probes, mDNS, SSDP/UPnP, CoAP, MQTT hints
 - TCP port scanning with configurable port sets
 - Service banner grabbing and fingerprinting
-- Default credential probing (HTTP basic/digest, RTSP, MQTT, Telnet)
+- Default credential probing (HTTP basic, MQTT anonymous, RTSP open, Telnet/CoAP exposed)
 - UPnP device description parsing
 - Embedded CVE / weak-config matching database
 - JSON and human-readable reports
@@ -32,7 +32,7 @@ cargo build --release --target aarch64-unknown-linux-gnu
 ## Usage
 
 ```sh
-sudo ./target/release/boggy --target 192.168.1.0/24
+./target/release/boggy --target 192.168.1.0/24
 ./target/release/boggy --auto --deep --output json --out report.json
 ./target/release/boggy --target 192.168.1.0/24 --passive
 ./target/release/boggy --target 192.168.1.0/24 --rate-limit 32 --timeout 500
@@ -49,7 +49,8 @@ to avoid overwhelming fragile IoT devices. Use `--passive` for discovery-only sc
 ## CVE database
 
 Embedded at build time. Refresh with `boggy update-db` (downloads to `~/.boggy/cves.json`,
-used automatically if present). Boggy does not replace a full vulnerability scanner; it
+used automatically if present; HTTPS is built in by default). Boggy does not replace a
+full vulnerability scanner; it
 detects the most common IoT flaws and weak configurations. Coverage is intentionally
 limited and focused on IoT.
 

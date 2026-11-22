@@ -49,21 +49,35 @@ fn now_str() -> String {
 
 fn fetch_url(url: &str) -> Result<String, String> {
     if url.starts_with("https://") {
-        // use system curl/wget to avoid TLS dependency
-        use std::process::Command;
-        let out = Command::new("curl").args(["-fsSL", url]).output();
-        if let Ok(o) = out {
-            if o.status.success() {
-                return Ok(String::from_utf8_lossy(&o.stdout).to_string());
+        #[cfg(feature = "https")]
+        {
+            match ureq::get(url).call() {
+                Ok(resp) => {
+                    let mut s = String::new();
+                    use std::io::Read;
+                    resp.into_reader().read_to_string(&mut s).map_err(|e| e.to_string())?;
+                    return Ok(s);
+                }
+                Err(e) => return Err(e.to_string()),
             }
         }
-        let out = Command::new("wget").args(["-qO-", url]).output();
-        if let Ok(o) = out {
-            if o.status.success() {
-                return Ok(String::from_utf8_lossy(&o.stdout).to_string());
+        #[cfg(not(feature = "https"))]
+        {
+            use std::process::Command;
+            let out = Command::new("curl").args(["-fsSL", url]).output();
+            if let Ok(o) = out {
+                if o.status.success() {
+                    return Ok(String::from_utf8_lossy(&o.stdout).to_string());
+                }
             }
+            let out = Command::new("wget").args(["-qO-", url]).output();
+            if let Ok(o) = out {
+                if o.status.success() {
+                    return Ok(String::from_utf8_lossy(&o.stdout).to_string());
+                }
+            }
+            return Err("https fetch requires curl or wget (build with --features https)".into());
         }
-        return Err("https fetch requires curl or wget".into());
     }
     // http
     let without = url.strip_prefix("http://").ok_or("bad url")?;
