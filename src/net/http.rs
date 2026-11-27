@@ -122,13 +122,39 @@ pub fn raw_request(
 /// Read a response from an already connected socket. Lets the port scanner reuse
 /// its liveness connection instead of opening a second one for every banner.
 pub fn read_response(stream: &mut TcpStream, limit: usize) -> Option<HttpResponse> {
+    use std::io::ErrorKind;
     let mut data = Vec::new();
     let mut tmp = [0u8; 4096];
     while data.len() < limit {
         match stream.read(&mut tmp) {
             Ok(0) => break,
             Ok(n) => data.extend_from_slice(&tmp[..n]),
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
             Err(_) => break,
+        }
+        // Many embedded servers keep the socket open after a short response.
+        // Waiting for close would cost the full timeout on every HTTP port.
+        let Some(headers) = parse_response(&data) else {
+            continue;
+        };
+        if let Some(length) = headers
+            .header("content-length")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+        {
+            if headers.body.len() >= length {
+                break;
+            }
+        } else if headers
+            .header("transfer-encoding")
+            .map(|v| v.to_ascii_lowercase().contains("chunked"))
+            .unwrap_or(false)
+        {
+            if data.windows(5).any(|w| w == b"0\r\n\r\n") {
+                break;
+            }
+        } else {
+            // No framing: the first packet already contains the whole reply.
+            break;
         }
     }
     parse_response(&data)

@@ -27,7 +27,21 @@ pub struct Semaphore {
     cond: Condvar,
 }
 
+pub struct SemaphoreGuard<'a>(&'a Semaphore);
+
+impl Drop for SemaphoreGuard<'_> {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
 impl Semaphore {
+    /// RAII acquisition: the slot is returned even if a probe unwinds.
+    pub fn guard(&self) -> SemaphoreGuard<'_> {
+        self.acquire();
+        SemaphoreGuard(self)
+    }
+
     pub fn new(max: usize) -> Self {
         Self {
             cur: Mutex::new(0),
@@ -82,7 +96,7 @@ fn scan_host(
     if !discovered && !passive {
         let mut probes: Vec<u16> = vec![80, 443, 22, 554];
         if let Some(custom) = custom_ports {
-            probes.extend(custom.iter().take(8));
+            probes.extend(custom.iter().take(4));
         }
         probes.sort_unstable();
         probes.dedup();
@@ -94,14 +108,38 @@ fn scan_host(
     let mut port_results: Vec<PortResult> = Vec::new();
     if !passive {
         let list: &[u16] = custom_ports.unwrap_or_else(|| ports::ports_for(opts.fast, opts.deep));
-        for &p in list {
-            sem.acquire();
-            let r = ports::scan_port(ip, p, opts.timeout);
-            sem.release();
-            if r.open {
-                port_results.push(r);
+        if list.len() >= 24 {
+            // A single quiet host used to serialise ~100 connect timeouts. Split
+            // the port list; the semaphore remains the global concurrency cap.
+            let collected = Mutex::new(Vec::new());
+            let sem_ref = sem.as_ref();
+            let timeout = opts.timeout;
+            let per_thread = (list.len() + 3) / 4;
+            std::thread::scope(|scope| {
+                for chunk in list.chunks(per_thread) {
+                    let collected = &collected;
+                    scope.spawn(move || {
+                        for &port in chunk {
+                            let _slot = sem_ref.guard();
+                            let result = ports::scan_port(ip, port, timeout);
+                            if result.open {
+                                collected.lock().unwrap().push(result);
+                            }
+                        }
+                    });
+                }
+            });
+            port_results = collected.into_inner().unwrap_or_default();
+        } else {
+            for &p in list {
+                let _slot = sem.guard();
+                let r = ports::scan_port(ip, p, opts.timeout);
+                if r.open {
+                    port_results.push(r);
+                }
             }
         }
+        port_results.sort_by_key(|p| p.port);
     }
 
     let hostname = mdns.get(&ip).and_then(|e| e.name.clone());
@@ -637,7 +675,7 @@ fn main() {
         None => None,
     };
 
-    let discovery_ms = opts.timeout.max(1500);
+    let discovery_ms = opts.discovery_ms.max(100);
     // mDNS and SSDP both wait for multicast replies; run them concurrently.
     let mdns_handle = thread::spawn(move || discover::mdns_scan(discovery_ms));
     let ssdp_entries = discover::ssdp_scan(discovery_ms);
@@ -729,7 +767,7 @@ fn main() {
     let (res_tx, res_rx) = mpsc::channel::<HostResult>();
 
     let workers = if opts.threads == 64 {
-        (all_hosts.len() / 4).clamp(8, 128)
+        all_hosts.len().clamp(1, 64)
     } else {
         opts.threads.max(1)
     };

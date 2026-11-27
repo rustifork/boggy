@@ -120,6 +120,8 @@ fn bad_checksum_aborts_without_writing() {
 #[test]
 fn json_report_is_well_shaped() {
     let out = run(bin().args([
+        "--discovery-ms",
+        "100",
         "--target",
         "127.0.0.1/32",
         "--ports",
@@ -144,6 +146,8 @@ fn json_report_is_well_shaped() {
     assert!(text.trim_start().starts_with('{'));
 
     let lines = ok(&run(bin().args([
+        "--discovery-ms",
+        "100",
         "--target",
         "127.0.0.1/32",
         "--ports",
@@ -175,6 +179,65 @@ fn invalid_inputs_fail_closed() {
 }
 
 #[test]
+fn parallel_ports_and_keepalive_servers() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let mut ports = Vec::new();
+    let mut handles = Vec::new();
+    for _ in 0..2 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        ports.push(listener.local_addr().unwrap().port());
+        handles.push(thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                let mut buf = [0u8; 64];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nServer: TestCam\r\n\r\nhello");
+                thread::sleep(Duration::from_millis(900));
+            }
+        }));
+    }
+
+    let started = Instant::now();
+    let spec = format!("{},{}", ports[0], ports[1]);
+    let out = run(bin().args([
+        "--discovery-ms",
+        "100",
+        "--target",
+        "127.0.0.1/32",
+        "--ports",
+        &spec,
+        "--timeout",
+        "2000",
+        "--no-creds",
+        "--no-cve",
+        "--output",
+        "json",
+    ]));
+    let elapsed = started.elapsed();
+    let text = ok(&out);
+    for port in &ports {
+        assert!(
+            text.contains(&format!("\"port\": {}", port)),
+            "missing port {} in {}",
+            port,
+            text
+        );
+    }
+    assert!(
+        elapsed < Duration::from_millis(1200),
+        "keep-alive servers stalled the scan: {:?}",
+        elapsed
+    );
+    for handle in handles {
+        let _ = handle.join();
+    }
+}
+
+#[test]
 fn invalid_values_fail_in_binary() {
     for flag in ["--min-severity", "--fail-on", "--output"] {
         let out = run(bin().args([flag, "not-a-value"]));
@@ -188,6 +251,8 @@ fn invalid_values_fail_in_binary() {
 #[test]
 fn fail_on_without_findings_is_zero() {
     let out = run(bin().args([
+        "--discovery-ms",
+        "100",
         "--target",
         "127.0.0.1/32",
         "--ports",

@@ -283,7 +283,7 @@ pub fn mqtt_anonymous(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Findin
 
 pub fn coap_probe(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Finding> {
     let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
-    let _ = sock.set_read_timeout(Some(Duration::from_millis(timeout_ms.max(150))));
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(timeout_ms.clamp(100, 250))));
     let req = [
         0x40, 0x01, 0x12, 0x34, 0xbb, b'.', b'w', b'e', b'l', b'l', b'-', b'k', b'n', b'o', b'w',
         b'n', 0x04, b'c', b'o', b'r', b'e',

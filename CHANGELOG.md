@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.3
+
+Speed and stability:
+
+- Port lists of 24+ entries scan in four bounded threads; results are sorted by port.
+- HTTP reads stop once Content-Length/chunk framing is satisfied instead of waiting for close.
+- CoAP reply window capped at 250 ms, liveness at 150 ms, worker count limited to hosts.
+- New `--discovery-ms` flag to shorten the multicast window (default unchanged at 1500).
+- Semaphore slots are released via RAII guards; interrupted reads are retried.
+- End-to-end test with keep-alive HTTP servers proves concurrent ports finish quickly.
+
 ## 0.6.2
 
 Performance pass:

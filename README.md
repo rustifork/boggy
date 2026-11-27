@@ -21,13 +21,13 @@
 
 | | |
 |---|---|
-| Binary size | ~1.3 MB, `std`-only, offline build |
+| Binary size | ~1.28 MB, `std`-only, offline build |
 | Databases | 677 IoT/OT CVEs, 278 credential pairs |
 | Discovery | ARP, mDNS, SSDP/UPnP, TCP liveness |
 | Probes | HTTP Basic/Digest/forms, Telnet, FTP, MQTT, CoAP, SNMP, Redis, Modbus, Docker, ADB… |
 | Reports | text, JSON, JSONL, severity summary, CI exit codes |
 | Updates | `update` = source code (git), `update-db` = data, `self-update` = binary |
-| Tests | 46 unit + 11 end-to-end |
+| Tests | 47 unit + 12 end-to-end |
 
 **Contents:** [Quick start](#quick-start) · [Commands](#commands) · [Security](#security) · [Architecture](#architecture) · [Testing](#testing) · [Troubleshooting](#troubleshooting)
 
@@ -86,6 +86,7 @@ boggy --target 192.168.1.0/24 -j 8 --rate-limit 32 --timeout 500
 | `-j, --threads <N>` | Workers (64) |
 | `--rate-limit <N>` | Max simultaneous sockets, 0 = auto |
 | `--timeout <MS>` | Per-probe timeout, default 800 |
+| `--discovery-ms <MS>` | Multicast discovery window, default 1500 |
 | `--cred-limit <N>` | Credential attempts per service, default 24 |
 | `--max-cve <N>` | CVE findings per host, default 15 |
 | `--max-hosts <N>` | Refuse larger CIDR expansions, default 65536 |
@@ -152,7 +153,9 @@ boggy selftest                        # 15 integrity/parser checks
 
 Performance notes: one connection per port, connect timeout capped at 400 ms,
 mDNS/SSDP run concurrently, both JSON databases are parsed once per scan, and UDP/SNMP
-or credential retries are time-bounded so a single quiet host cannot stall a worker.
+or credential retries are time-bounded. Port lists of 24+ entries are split across four
+bounded threads; HTTP reads stop as soon as framing is complete, so keep-alive servers
+do not stall a worker.
 
 **Out of scope:** TLS inspection, active exploitation, authenticated version confirmation, zero-day discovery. A CVE match means "this device looks affected" — confirm with the vendor advisory.
 
@@ -182,7 +185,7 @@ Everything lives in `src/`: `net` (discovery, ports, HTTP, MD5, SHA-256), `iot` 
 ## Testing
 
 ```sh
-cargo test                 # 46 unit + 11 end-to-end checks
+cargo test                 # 47 unit + 12 end-to-end checks
 cargo run -- selftest      # runs inside the binary, no cargo needed on target
 cargo fmt --check
 ```

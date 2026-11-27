@@ -45,6 +45,7 @@ which makes it usable as a CI gate.
 - `-j, --threads N` workers (default 64)
 - `--rate-limit N` max simultaneous sockets (0 = auto)
 - `--timeout MS` per-probe timeout (default 800)
+- `--discovery-ms MS` mDNS/SSDP listen window (default 1500)
 - `--cve-file` / `--creds-file` override databases
 - `-o, --output text|json|jsonl`
 - `--out FILE` write report to file

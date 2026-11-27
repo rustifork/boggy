@@ -93,6 +93,7 @@ pub struct ScanOpts {
     pub threads: usize,
     pub rate_limit: usize,
     pub timeout: u64,
+    pub discovery_ms: u64,
     pub fast: bool,
     pub ports: Option<String>,
     pub no_creds: bool,
@@ -120,6 +121,7 @@ impl Default for ScanOpts {
             threads: 64,
             rate_limit: 0,
             timeout: 800,
+            discovery_ms: 1500,
             fast: false,
             ports: None,
             no_creds: false,
@@ -170,6 +172,7 @@ Options:
   -j, --threads <N>         Concurrent workers (default: 64)
       --rate-limit <N>      Max simultaneous sockets (0 = auto)
       --timeout <MS>        Per-probe timeout (default: 800)
+      --discovery-ms <MS>   Multicast discovery window (default: 1500)
       --no-creds            Disable credential probes
       --no-cve              Disable CVE matching
       --cred-limit <N>      Credential attempts per service (default: 24)
@@ -395,6 +398,11 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
                     .parse()
                     .map_err(|_| ParseError::Message(format!("invalid number for {}", arg)))?;
             }
+            "--discovery-ms" => {
+                cli.scan.discovery_ms = value(&expanded, &mut i, arg)?
+                    .parse()
+                    .map_err(|_| ParseError::Message(format!("invalid number for {}", arg)))?;
+            }
             "--cred-limit" => {
                 cli.scan.cred_limit = value(&expanded, &mut i, arg)?
                     .parse()
@@ -486,6 +494,7 @@ mod tests {
         assert!(cli.command.is_none());
         assert_eq!(cli.scan.threads, 64);
         assert_eq!(cli.scan.max_hosts, 65536);
+        assert_eq!(cli.scan.discovery_ms, 1500);
     }
 
     #[test]
