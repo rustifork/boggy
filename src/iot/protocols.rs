@@ -294,15 +294,103 @@ pub fn coap_probe(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Finding> {
         // CoAP header: ver(2) type(2) TKL(4), code, mid. A valid response has
         // version 1 and a non-zero code; random UDP noise must not match.
         if n > 4 && buf[0] >> 6 == 1 && buf[1] != 0 {
+            let mut detail = format!("{}:{}", ip, port);
+            if let Some(marker) = buf[..n].iter().position(|b| *b == 0xff) {
+                let payload = &buf[marker + 1..n];
+                let text: String = payload
+                    .iter()
+                    .take(160)
+                    .map(|&b| {
+                        if (0x20..0x7f).contains(&b) {
+                            b as char
+                        } else {
+                            ' '
+                        }
+                    })
+                    .collect();
+                if text.contains("</") {
+                    detail.push_str(&format!(" | resources: {}", text.trim()));
+                }
+            }
             return Some(f(
                 "COAP_OPEN",
                 "medium",
                 "CoAP endpoint responds without auth",
-                format!("{}:{}", ip, port),
+                detail,
             ));
         }
     }
     None
+}
+
+/// NTP `monlist` (CVE-2013-5211): a single mode-7 request returns recent clients.
+pub fn ntp_probe(ip: Ipv4Addr, timeout_ms: u64) -> Option<Finding> {
+    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(timeout_ms.clamp(80, 250))));
+    let request = [0x17u8, 0x00, 0x00, 0x00];
+    let _ = sock.send_to(&request, (ip, 123u16));
+    let mut buf = [0u8; 512];
+    let (n, _) = sock.recv_from(&mut buf).ok()?;
+    if n >= 8 && buf[0] & 0x07 == 7 && buf[1] == 0 {
+        Some(f(
+            "NTP_MONLIST",
+            "high",
+            "NTP server answers monlist requests (amplification risk)",
+            format!("{}:123 - {} bytes reply", ip, n),
+        ))
+    } else {
+        None
+    }
+}
+
+/// BACnet Who-Is / I-Am discovery on UDP 47808.
+pub fn bacnet_probe(ip: Ipv4Addr, timeout_ms: u64) -> Option<Finding> {
+    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(timeout_ms.clamp(100, 250))));
+    let request = [0x81u8, 0x0b, 0x00, 0x04, 0x10, 0x08];
+    let _ = sock.send_to(&request, (ip, 47808u16));
+    let mut buf = [0u8; 256];
+    let (n, _) = sock.recv_from(&mut buf).ok()?;
+    if n >= 12 && buf.get(4) == Some(&0x10) && buf.get(5) == Some(&0x0c) {
+        let vendor = u16::from_be_bytes([buf[n - 4], buf[n - 3]]);
+        Some(f(
+            "BACNET_IAAM",
+            "high",
+            "BACnet device answered Who-Is",
+            format!("{}:47808 - vendor {}", ip, vendor),
+        ))
+    } else {
+        None
+    }
+}
+
+/// EtherNet/IP List Identity on UDP 44818.
+pub fn ethernet_ip_probe(ip: Ipv4Addr, timeout_ms: u64) -> Option<Finding> {
+    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(timeout_ms.clamp(100, 250))));
+    let request = [
+        0x63u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+        0x00,
+    ];
+    let _ = sock.send_to(&request, (ip, 44818u16));
+    let mut buf = [0u8; 512];
+    let (n, _) = sock.recv_from(&mut buf).ok()?;
+    if n >= 12 && buf[0] == 0xc3 && buf[1] == 0x00 {
+        let mut text = String::new();
+        for &b in &buf[8..n.min(80)] {
+            if (0x20..0x7f).contains(&b) {
+                text.push(b as char);
+            }
+        }
+        Some(f(
+            "ETHERNET_IP_ID",
+            "high",
+            "EtherNet/IP device identity readable",
+            format!("{}:44818 - {}", ip, text.trim()),
+        ))
+    } else {
+        None
+    }
 }
 
 pub fn rtsp_request(
@@ -453,6 +541,13 @@ mod tests {
         body.extend_from_slice(&vars);
         let packet = tlv(0x30, &body);
         assert_eq!(snmp_sysdescr(&packet).as_deref(), Some("Linux router 5.4"));
+    }
+
+    #[test]
+    fn ot_probe_requests_are_well_formed() {
+        assert_eq!([0x17u8, 0, 0, 0][0], 0x17);
+        assert_eq!([0x81u8, 0x0b, 0, 4, 0x10, 0x08].len(), 6);
+        assert_eq!([0x63u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0][12], 1);
     }
 
     #[test]

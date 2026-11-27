@@ -156,6 +156,19 @@ pub fn run() -> Result<String, String> {
         crate::cli::parse(["--min-severity", "bogus"].iter().map(|s| s.to_string())).is_err();
     checks.push(check("cli validation", cli_invalid, "bad severity refused"));
 
+    let sarif_ok = crate::json::parse(crate::sarif::render(&report).as_bytes())
+        .map(|v| v.get("version").and_then(Json::as_str) == Some("2.1.0"))
+        .unwrap_or(false);
+    checks.push(check("sarif rendering", sarif_ok, "SARIF 2.1.0 output"));
+
+    let upnp_ok = crate::iot::upnp::tag(
+        "<s:Envelope><NewExternalPort>8080</NewExternalPort></s:Envelope>",
+        "NewExternalPort",
+    )
+    .as_deref()
+        == Some("8080");
+    checks.push(check("upnp soap parsing", upnp_ok, "IGD value extraction"));
+
     let mut out = String::new();
     out.push_str("boggy selftest\n");
     let mut failures = 0;

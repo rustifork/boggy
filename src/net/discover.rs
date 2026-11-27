@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 pub struct MdnsEntry {
     pub ip: Ipv4Addr,
     pub name: Option<String>,
+    pub txt: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -143,6 +144,7 @@ pub fn mdns_scan(timeout_ms: u64) -> Vec<MdnsEntry> {
         };
         let packet = &buf[..n];
         let mut name = None;
+        let mut txt: Vec<String> = Vec::new();
         if packet.len() >= 12 {
             let qd = u16::from_be_bytes([packet[4], packet[5]]) as usize;
             let an = u16::from_be_bytes([packet[6], packet[7]]) as usize;
@@ -177,6 +179,23 @@ pub fn mdns_scan(timeout_ms: u64) -> Vec<MdnsEntry> {
                         }
                     }
                 }
+                if rtype == 16 && rdata_off + rdlen <= packet.len() {
+                    let mut p = rdata_off;
+                    let end = rdata_off + rdlen;
+                    while p < end {
+                        let len = packet[p] as usize;
+                        p += 1;
+                        if p + len > end {
+                            break;
+                        }
+                        if let Ok(value) = std::str::from_utf8(&packet[p..p + len]) {
+                            if !value.is_empty() {
+                                txt.push(value.to_string());
+                            }
+                        }
+                        p += len;
+                    }
+                }
                 if rtype == 12 && rdata_off < packet.len() {
                     if let Some((ptrname, _)) = read_dns_name(packet, rdata_off) {
                         if name.is_none() && (ptrname.contains(".local") || ptrname.contains('_')) {
@@ -201,7 +220,7 @@ pub fn mdns_scan(timeout_ms: u64) -> Vec<MdnsEntry> {
                 }
             }
         }
-        out.push(MdnsEntry { ip, name });
+        out.push(MdnsEntry { ip, name, txt });
     }
     let mut map: BTreeMap<Ipv4Addr, MdnsEntry> = BTreeMap::new();
     for e in out {

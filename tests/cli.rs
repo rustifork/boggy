@@ -89,7 +89,7 @@ fn dry_run_does_not_write() {
     ]));
     let text = ok(&out);
     assert!(text.contains("dry-run"), "{}", text);
-    assert!(text.contains("677 entries"), "{}", text);
+    assert!(text.contains("1200 entries"), "{}", text);
     assert!(!dest.exists(), "dry-run created a file");
 }
 
@@ -235,6 +235,29 @@ fn parallel_ports_and_keepalive_servers() {
     for handle in handles {
         let _ = handle.join();
     }
+}
+
+#[test]
+fn sarif_output_is_well_formed() {
+    let out = run(bin().args([
+        "--discovery-ms",
+        "100",
+        "--target",
+        "127.0.0.1/32",
+        "--ports",
+        "22",
+        "--timeout",
+        "100",
+        "--no-creds",
+        "--no-cve",
+        "--output",
+        "sarif",
+    ]));
+    let text = ok(&out);
+    assert!(text.contains("\"version\": \"2.1.0\""));
+    assert!(text.contains("\"tool\""));
+    assert!(text.contains("\"driver\""));
+    assert!(text.contains("\"results\""));
 }
 
 #[test]

@@ -21,13 +21,14 @@
 
 | | |
 |---|---|
-| Binary size | ~1.28 MB, `std`-only, offline build |
-| Databases | 677 IoT/OT CVEs, 278 credential pairs |
-| Discovery | ARP, mDNS, SSDP/UPnP, TCP liveness |
-| Probes | HTTP Basic/Digest/forms, Telnet, FTP, MQTT, CoAP, SNMP, Redis, Modbus, Docker, ADB… |
-| Reports | text, JSON, JSONL, severity summary, CI exit codes |
+| Binary size | ~1.7 MB, `std`-only, offline build |
+| Databases | 1200 IoT/OT CVEs, 302 credential pairs and SNMP communities |
+| Discovery | ARP, mDNS + TXT, SSDP/UPnP, TCP liveness |
+| Probes | HTTP Basic/Digest/forms, Telnet, FTP, MQTT, CoAP, SNMP, Redis, Modbus, Docker, ADB, NTP, BACnet, EtherNet/IP |
+| UPnP IGD | WAN IP and active port mappings via SOAP |
+| Reports | text, JSON, JSONL, SARIF 2.1.0, severity summary, CI exit codes |
 | Updates | `update` = source code (git), `update-db` = data, `self-update` = binary |
-| Tests | 47 unit + 12 end-to-end |
+| Tests | 51 unit + 13 end-to-end |
 
 **Contents:** [Quick start](#quick-start) · [Commands](#commands) · [Security](#security) · [Architecture](#architecture) · [Testing](#testing) · [Troubleshooting](#troubleshooting)
 
@@ -69,7 +70,7 @@ Three update paths, deliberately separate:
 boggy --auto
 boggy --target 192.168.1.0/24 --exclude 192.168.1.50/32
 boggy --target 192.168.1.0/24 --fast          # 17 top IoT ports
-boggy --target 192.168.1.0/24 --deep          # ~170 ports, every probe
+boggy --target 192.168.1.0/24 --deep          # ~170 ports + NTP/BACnet/EtherNet-IP probes
 boggy --target 192.168.1.0/24 --ports 22,80,443,8000-8100
 boggy --target 192.168.1.0/24 --passive       # discovery only
 boggy --target 192.168.1.0/24 -j 8 --rate-limit 32 --timeout 500
@@ -92,7 +93,7 @@ boggy --target 192.168.1.0/24 -j 8 --rate-limit 32 --timeout 500
 | `--max-hosts <N>` | Refuse larger CIDR expansions, default 65536 |
 | `--min-severity <S>` | `info\|low\|medium\|high\|critical` |
 | `--fail-on <S>` | Exit 2 when a finding reaches this severity |
-| `-o, --output <FMT>` | `text`, `json`, `jsonl` |
+| `-o, --output <FMT>` | `text`, `json`, `jsonl`, `sarif` |
 | `--out <FILE>` | Write the report to a file |
 | `--cve-file` / `--creds-file` | Override databases |
 | `-v` | Progress on stderr |
@@ -134,7 +135,7 @@ boggy update-db --dry-run             # validate and print, write nothing
 boggy update-check                    # release version only
 boggy db-info                         # embedded hashes and active overrides
 boggy self-update                     # verified release binary
-boggy selftest                        # 15 integrity/parser checks
+boggy selftest                        # 17 integrity/parser checks
 ```
 
 ---
@@ -185,7 +186,7 @@ Everything lives in `src/`: `net` (discovery, ports, HTTP, MD5, SHA-256), `iot` 
 ## Testing
 
 ```sh
-cargo test                 # 47 unit + 12 end-to-end checks
+cargo test                 # 51 unit + 13 end-to-end checks
 cargo run -- selftest      # runs inside the binary, no cargo needed on target
 cargo fmt --check
 ```

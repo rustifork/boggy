@@ -35,7 +35,7 @@ which makes it usable as a CI gate.
 - `--target CIDR` target network (repeatable)
 - `--auto` auto-detect local /24
 - `--exclude CIDR` skip addresses (repeatable)
-- `--fast` / `--deep` / `--ports SPEC` port selection
+- `--fast` / `--deep` / `--ports SPEC` port selection; `--deep` also enables NTP, BACnet and EtherNet/IP probes
 - `--passive` no active probes
 - `--no-creds` / `--no-cve` disable entire probe families
 - `--cred-limit N` max credential attempts per service (0 = unlimited)
@@ -47,7 +47,7 @@ which makes it usable as a CI gate.
 - `--timeout MS` per-probe timeout (default 800)
 - `--discovery-ms MS` mDNS/SSDP listen window (default 1500)
 - `--cve-file` / `--creds-file` override databases
-- `-o, --output text|json|jsonl`
+- `-o, --output text|json|jsonl|sarif`
 - `--out FILE` write report to file
 - `-v` progress on stderr
 

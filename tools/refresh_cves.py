@@ -161,7 +161,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--db", default="db/cves.json")
     ap.add_argument("--cache", default=".cache/nvd")
-    ap.add_argument("--max-per-vendor", type=int, default=8)
+    ap.add_argument("--max-per-vendor", type=int, default=12)
     ap.add_argument("--pause", type=float, default=6.5)
     args = ap.parse_args()
 

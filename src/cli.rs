@@ -167,7 +167,7 @@ Options:
       --fast                Top ports only
       --passive             Discovery only, no active probes
       --ports <SPEC>        22,80,443,8000-8100
-  -o, --output <FORMAT>     text | json | jsonl (default: text)
+  -o, --output <FORMAT>     text | json | jsonl | sarif (default: text)
       --out <FILE>          Write report to file
   -j, --threads <N>         Concurrent workers (default: 64)
       --rate-limit <N>      Max simultaneous sockets (0 = auto)
@@ -252,9 +252,9 @@ fn validate_scan(scan: &ScanOpts) -> Result<(), ParseError> {
             return Err(ParseError::Message(format!("invalid --fail-on: {}", value)));
         }
     }
-    if !matches!(scan.output.as_str(), "text" | "json" | "jsonl") {
+    if !matches!(scan.output.as_str(), "text" | "json" | "jsonl" | "sarif") {
         return Err(ParseError::Message(format!(
-            "invalid --output: {} (expected text, json or jsonl)",
+            "invalid --output: {} (expected text, json, jsonl or sarif)",
             scan.output
         )));
     }

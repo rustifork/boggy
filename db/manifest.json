@@ -3,8 +3,8 @@
  "generated": "2026-11-27",
  "cves": {
   "file": "cves.json",
-  "sha256": "4c2ce7e626c6da6ee0181b13180e818999ba5537d8a62924f4437148467cef6d",
-  "entries": 677
+  "sha256": "9e0e13bb68a85d25dfce0c54bde25108c4d68323dd086793c37205a92865c126",
+  "entries": 1200
  },
  "creds": {
   "file": "creds.json",

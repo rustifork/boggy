@@ -2,6 +2,7 @@ mod cli;
 mod iot;
 mod json;
 mod net;
+mod sarif;
 mod selftest;
 mod source;
 mod types;
@@ -16,6 +17,7 @@ use crate::net::subnet::Subnet;
 use crate::types::{Finding, HostResult, PortResult, ScanReport, Severity, Summary};
 use crate::update as upd;
 use std::collections::{BTreeMap, HashSet};
+use std::net::Ipv4Addr;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -163,6 +165,12 @@ fn scan_host(
         banner_text.push(' ');
         banner_text.push_str(h);
     }
+    if let Some(entry) = mdns.get(&ip) {
+        for value in &entry.txt {
+            banner_text.push(' ');
+            banner_text.push_str(value);
+        }
+    }
 
     let mut device_type = None;
     let mut vendor = None;
@@ -231,6 +239,39 @@ fn scan_host(
                             "UPnP firmware version disclosed",
                             fw.clone(),
                         ));
+                    }
+                    if let Some(control) = &dev.control_url {
+                        sem.acquire();
+                        let igd = upnp::igd_info(loc, control, opts.timeout);
+                        sem.release();
+                        if let Some((external, mappings)) = igd {
+                            if let Some(ip) = external {
+                                findings.push(Finding::new(
+                                    "UPNP_WAN_IP",
+                                    "info",
+                                    "UPnP IGD disclosed the WAN IP address",
+                                    ip,
+                                ));
+                            }
+                            if !mappings.is_empty() {
+                                let sample = mappings
+                                    .iter()
+                                    .take(3)
+                                    .map(|m| {
+                                        format!("{}/{}->{}", m.external, m.protocol, m.internal)
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                let mut f = Finding::new(
+                                    "UPNP_PORT_MAPPINGS",
+                                    "high",
+                                    "UPnP IGD exposes active WAN port mappings",
+                                    format!("{} mapping(s): {}", mappings.len(), sample),
+                                );
+                                f.confidence = Some("high".into());
+                                findings.push(f);
+                            }
+                        }
                     }
                 }
             }
@@ -336,6 +377,17 @@ fn scan_host(
         }
         if let Some(f) = protocols::coap_probe(ip, 5683, opts.timeout) {
             findings.push(f);
+        }
+        if opts.deep {
+            for probe in [
+                protocols::ntp_probe as fn(Ipv4Addr, u64) -> Option<Finding>,
+                protocols::bacnet_probe,
+                protocols::ethernet_ip_probe,
+            ] {
+                if let Some(f) = probe(ip, opts.timeout) {
+                    findings.push(f);
+                }
+            }
         }
         sem.release();
 
@@ -513,6 +565,7 @@ fn build_report_text(report: &ScanReport, output: &str) -> String {
             .map(|h| h.to_json().compact())
             .collect::<Vec<_>>()
             .join("\n"),
+        "sarif" => sarif::render(report),
         _ => render_text(report),
     }
 }

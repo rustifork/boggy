@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.0
+
+Completeness release:
+
+- CVE database grown from 677 to **1200** entries; NVD refresh default cap raised to 12/vendor.
+- New OT/UDP probes (enabled with `--deep`): NTP monlist, BACnet Who-Is/I-Am, EtherNet/IP List Identity.
+- CoAP responses now report discovered `.well-known/core` resources.
+- UPnP IGD SOAP queries enumerate the WAN IP and up to 8 active port mappings.
+- mDNS TXT records are parsed and fed to the fingerprint/CVE correlator.
+- `--output sarif` emits SARIF 2.1.0 for CI code-scanning ingestion.
+- 51 unit + 13 end-to-end tests, 17 in-binary checks.
+
 ## 0.6.3
 
 Speed and stability:
