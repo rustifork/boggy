@@ -28,6 +28,19 @@ impl Subnet {
         (u32::from(ip) & mask(self.prefix)) == u32::from(self.network)
     }
 
+    /// Number of enumerated addresses, computed before allocating a host list.
+    pub fn host_count(&self) -> usize {
+        match self.prefix {
+            32 => 1,
+            31 => 2,
+            p if p <= 30 => {
+                let count = 1usize.checked_shl(32 - p as u32).unwrap_or(usize::MAX);
+                count.saturating_sub(2)
+            }
+            _ => 1,
+        }
+    }
+
     /// Enumerate usable addresses. /31 and /32 are treated as single-host routes.
     pub fn hosts(&self) -> Vec<Ipv4Addr> {
         let count = match self.prefix {
@@ -86,5 +99,13 @@ mod tests {
         assert_eq!(Subnet::parse("10.0.0.0/31").unwrap().hosts().len(), 2);
         assert_eq!(Subnet::parse("10.0.0.1/32").unwrap().hosts().len(), 1);
         assert_eq!(Subnet::parse("10.0.0.0/24").unwrap().hosts().len(), 254);
+        assert_eq!(
+            Subnet::parse("10.0.0.0/8").unwrap().host_count(),
+            16_777_214
+        );
+        assert_eq!(
+            Subnet::parse("10.0.0.0/8").unwrap().host_count(),
+            Subnet::parse("10.0.0.0/8").unwrap().hosts().len()
+        );
     }
 }

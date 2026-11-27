@@ -2,6 +2,7 @@ mod cli;
 mod iot;
 mod json;
 mod net;
+mod selftest;
 mod types;
 mod update;
 
@@ -556,6 +557,16 @@ fn main() {
             }
             return;
         }
+        Some(Command::SelfTest) => {
+            match selftest::run() {
+                Ok(report) => println!("{}", report),
+                Err(report) => {
+                    eprint!("{}", report);
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
         None => {}
     }
 
@@ -601,6 +612,17 @@ fn main() {
     let discovery_ms = opts.timeout.max(1500);
     let mdns_entries = discover::mdns_scan(discovery_ms);
     let ssdp_entries = discover::ssdp_scan(discovery_ms);
+
+    if opts.max_hosts > 0 {
+        let projected: usize = subnets.iter().map(Subnet::host_count).sum();
+        if projected > opts.max_hosts {
+            eprintln!(
+                "target expands to {} hosts (limit {}); narrow --target or raise --max-hosts",
+                projected, opts.max_hosts
+            );
+            std::process::exit(1);
+        }
+    }
 
     let mut all_hosts: Vec<std::net::Ipv4Addr> = Vec::new();
     for s in &subnets {

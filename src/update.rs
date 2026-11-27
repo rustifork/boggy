@@ -33,6 +33,7 @@ pub struct UpdateOpts {
     pub creds_only: bool,
     pub cves_sha256: Option<String>,
     pub creds_sha256: Option<String>,
+    pub dry_run: bool,
 }
 
 impl Default for UpdateOpts {
@@ -49,21 +50,22 @@ impl Default for UpdateOpts {
             creds_only: false,
             cves_sha256: None,
             creds_sha256: None,
+            dry_run: false,
         }
     }
 }
 
 #[derive(Clone, Debug)]
-struct ManifestFile {
-    file: String,
-    sha256: String,
-    entries: usize,
+pub struct ManifestFile {
+    pub file: String,
+    pub sha256: String,
+    pub entries: usize,
 }
 
 #[derive(Clone, Debug)]
-struct Manifest {
-    cves: ManifestFile,
-    creds: ManifestFile,
+pub struct Manifest {
+    pub cves: ManifestFile,
+    pub creds: ManifestFile,
 }
 
 #[derive(Clone, Debug)]
@@ -89,7 +91,7 @@ fn manifest_file(value: Option<&Json>) -> Option<ManifestFile> {
     })
 }
 
-fn parse_manifest(data: &[u8]) -> Result<Manifest, String> {
+pub fn parse_manifest(data: &[u8]) -> Result<Manifest, String> {
     let root = crate::json::parse(data)?;
     if root.get("version").and_then(Json::as_u64) != Some(1) {
         return Err(format!(
@@ -159,6 +161,61 @@ fn checked_url(url: &str, allow_http: bool) -> Result<(), String> {
     Err(format!("unsupported URL scheme: {}", url))
 }
 
+/// wget fallback when curl is missing or fails. It keeps HTTPS certificate checking,
+/// but cannot expose redirect headers, so asset downloads need curl.
+fn wget_fetch(
+    url: &str,
+    max_bytes: usize,
+    header_path: &Path,
+    body_path: &Path,
+    prior: Option<&str>,
+) -> Result<Fetched, String> {
+    let _ = fs::remove_file(header_path);
+    let body_arg = format!("-O{}", body_path.display());
+    let result = std::process::Command::new("wget")
+        .args([
+            "-q",
+            &body_arg,
+            "--tries=1",
+            "--timeout=60",
+            "--max-redirect=0",
+            url,
+        ])
+        .output();
+    match result {
+        Ok(output) if output.status.success() => {
+            let body = fs::read(body_path).unwrap_or_default();
+            let _ = fs::remove_file(body_path);
+            if body.len() > max_bytes {
+                return Err(format!("{} exceeds the {} byte limit", url, max_bytes));
+            }
+            Ok(Fetched {
+                status: 200,
+                location: None,
+                body,
+            })
+        }
+        Ok(output) => {
+            let _ = fs::remove_file(body_path);
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(format!(
+                "GET {} failed: {}; wget fallback: {}",
+                url,
+                prior.unwrap_or("curl error"),
+                stderr
+            ))
+        }
+        Err(error) => {
+            let _ = fs::remove_file(body_path);
+            Err(format!(
+                "curl and wget are unavailable: {}; {}",
+                error,
+                prior.unwrap_or("")
+            ))
+        }
+    }
+}
+
 struct Fetched {
     status: u16,
     location: Option<String>,
@@ -218,37 +275,22 @@ fn curl_fetch(url: &str, max_bytes: usize, allow_http: bool) -> Result<Fetched, 
         "--tlsv1.2".into(),
         url.to_string(),
     ];
-    let result = std::process::Command::new("curl").args(&args).output();
-    let output = match result {
-        Ok(output) => output,
-        Err(_) => {
-            // wget fallback: no header capture, so redirects are not supported.
-            let body_arg = format!("-O{}", body_path.display());
-            let fallback = std::process::Command::new("wget")
-                .args(["-q", &body_arg, "--max-redirect=0", url])
-                .output()
-                .map_err(|e| format!("curl and wget are unavailable: {}", e))?;
-            if !fallback.status.success() {
-                cleanup();
-                return Err(format!("GET {} failed", url));
-            }
-            let body = fs::read(&body_path).unwrap_or_default();
-            cleanup();
-            if body.len() > max_bytes {
-                return Err(format!("{} exceeds the {} byte limit", url, max_bytes));
-            }
-            return Ok(Fetched {
-                status: 200,
-                location: None,
-                body,
-            });
+    match std::process::Command::new("curl").args(&args).output() {
+        Ok(output) if output.status.success() => output,
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return wget_fetch(url, max_bytes, &header_path, &body_path, Some(&stderr));
+        }
+        Err(error) => {
+            return wget_fetch(
+                url,
+                max_bytes,
+                &header_path,
+                &body_path,
+                Some(&format!("curl unavailable: {}", error)),
+            )
         }
     };
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        cleanup();
-        return Err(format!("GET {} failed: {}", url, stderr));
-    }
 
     let headers = fs::read_to_string(&header_path).unwrap_or_default();
     let mut status = 0u16;
@@ -663,9 +705,12 @@ pub fn update_databases(opts: &UpdateOpts) -> Result<String, String> {
                 .clone()
                 .unwrap_or_else(|| home_path("cves.json")),
         );
-        atomic_write(&dest, &cves.bytes, false)?;
+        if !opts.dry_run {
+            atomic_write(&dest, &cves.bytes, false)?;
+        }
         lines.push(format!(
-            "CVE database: {} entries, sha256 {} -> {}",
+            "{}CVE database: {} entries, sha256 {} -> {}",
+            if opts.dry_run { "dry-run: " } else { "" },
             cves.entries,
             cves.sha256,
             dest.display()
@@ -677,9 +722,12 @@ pub fn update_databases(opts: &UpdateOpts) -> Result<String, String> {
                 .clone()
                 .unwrap_or_else(|| home_path("creds.json")),
         );
-        atomic_write(&dest, &creds.bytes, false)?;
+        if !opts.dry_run {
+            atomic_write(&dest, &creds.bytes, false)?;
+        }
         lines.push(format!(
-            "Credential database: {} pairs, sha256 {} -> {}",
+            "{}Credential database: {} pairs, sha256 {} -> {}",
+            if opts.dry_run { "dry-run: " } else { "" },
             creds.entries,
             creds.sha256,
             dest.display()

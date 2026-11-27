@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+
+- `boggy selftest`: 13 in-binary integrity/parser checks for devices without cargo.
+- `update-db --dry-run`: validates and prints without writing anything.
+- wget fallback when curl is missing or fails; HTTPS certificate checks preserved.
+- `--max-hosts` now checked before enumerating CIDRs, so oversized targets fail fast.
+- 8 end-to-end tests against the built binary (39 unit tests total: 47 checks).
+- README rewritten: quickstart, option table, exit codes, security model, troubleshooting.
+
 ## 0.4.0
 
 - **Zero external crates**: removed clap, serde, serde_json and ureq. CLI parsing,

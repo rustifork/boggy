@@ -21,6 +21,8 @@ jobs:
         run: cargo clippy --all-targets
       - name: Tests
         run: cargo test
+      - name: In-binary selftest
+        run: cargo run --quiet -- selftest
       - name: Database validation
         run: |
           python3 - <<'PY'

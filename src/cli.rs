@@ -21,6 +21,7 @@ pub enum Command {
     },
     UpdateCheck,
     DbInfo,
+    SelfTest,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +37,7 @@ pub struct DbUpdateArgs {
     pub allow_http: bool,
     pub cves_sha256: Option<String>,
     pub creds_sha256: Option<String>,
+    pub dry_run: bool,
 }
 
 impl Default for DbUpdateArgs {
@@ -52,6 +54,7 @@ impl Default for DbUpdateArgs {
             allow_http: false,
             cves_sha256: None,
             creds_sha256: None,
+            dry_run: false,
         }
     }
 }
@@ -70,6 +73,7 @@ impl DbUpdateArgs {
             creds_only: self.creds_only,
             cves_sha256: self.cves_sha256.clone(),
             creds_sha256: self.creds_sha256.clone(),
+            dry_run: self.dry_run,
         }
     }
 }
@@ -146,6 +150,7 @@ Commands:
   update        Check for a release and refresh databases (or self-update)
   update-check  Print the latest release version without changing anything
   db-info       Show hashes and active locations of the shipped databases
+  selftest      Run integrity and parser checks without cargo
   help          Print this message
 
 Options:
@@ -192,6 +197,7 @@ Options:
       --allow-http            Permit plain HTTP
       --cves-sha256 <HEX>     Override expected CVE hash
       --creds-sha256 <HEX>    Override expected credential hash
+      --dry-run              Validate without writing
   -h, --help                  Show help
 ";
 
@@ -269,6 +275,10 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
             }
             "db-info" => {
                 cli.command = Some(Command::DbInfo);
+                break;
+            }
+            "selftest" => {
+                cli.command = Some(Command::SelfTest);
                 break;
             }
             "-t" | "--target" => {
@@ -355,6 +365,7 @@ fn parse_db_args(args: &[String], i: &mut usize) -> Result<DbUpdateArgs, ParseEr
             "--creds-only" => db.creds_only = true,
             "--no-verify" => db.no_verify = true,
             "--allow-http" => db.allow_http = true,
+            "--dry-run" => db.dry_run = true,
             "-h" | "--help" => {
                 *i = j;
                 return Err(ParseError::Help(UPDATE_HELP.into()));
@@ -444,6 +455,17 @@ mod tests {
             Command::Update {
                 self_update, no_db, ..
             } => assert!(self_update && no_db),
+            _ => panic!("wrong command"),
+        }
+    }
+
+    #[test]
+    fn selftest_and_dry_run() {
+        let cli = parse(args(&["selftest"])).unwrap();
+        assert!(matches!(cli.command, Some(Command::SelfTest)));
+        let cli = parse(args(&["update-db", "--dry-run"])).unwrap();
+        match cli.command.unwrap() {
+            Command::UpdateDb { db } => assert!(db.dry_run),
             _ => panic!("wrong command"),
         }
     }

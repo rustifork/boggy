@@ -17,7 +17,9 @@ Modules:
 - `iot/protocols`: SNMP, MQTT, CoAP, Redis, Memcached, Modbus, Docker, Elasticsearch, ADB, TR-069
 - `iot/cve`: embedded CVE + weak-config matching, version constraints, CVSS ranking
 - `types`: serializable report model and severity ordering
-- `update`: verified downloads via system curl/wget, strict schema validation, atomic writes, release check and self-update
+- `update`: verified downloads via system curl/wget (wget fallback), strict schema validation, atomic writes, release check and self-update
+- `selftest`: in-binary integrity and parser checks
+- `tests/cli.rs`: end-to-end tests spawning the built binary
 
 Concurrency: worker pool over hosts, ports scanned sequentially per host, with a
 counting semaphore capping simultaneous sockets. UDP probes are issued once per host.

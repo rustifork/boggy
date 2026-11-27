@@ -62,6 +62,8 @@ boggy update --check-only
 boggy update --self                      # verified self-update of the binary
 boggy update-check
 boggy db-info
+boggy update-db --dry-run
+boggy selftest
 ```
 
 Downloads are SHA-256 pinned against `db/manifest.json`, limited in size, never follow
@@ -90,3 +92,5 @@ scp target/aarch64-unknown-linux-gnu/release/boggy pi@host:/usr/local/bin/
 No root privileges are required (TCP connect, UDP probes, multicast discovery).
 `curl` (or `wget`) must be installed for `update-db` / `update` HTTPS downloads; the
 scanner itself needs no runtime dependency beyond the binary and its JSON database files.
+`boggy selftest` runs integrity and parser checks inside the binary, useful on a Pi without
+cargo. `--dry-run` validates an update and prints what would be written, without touching files.

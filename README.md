@@ -1,116 +1,155 @@
 # boggy
 
-Lightweight, agentless IoT network vulnerability scanner. Runs on Raspberry Pi and other small Linux devices.
+[![CI](https://github.com/rustifork/boggy/actions/workflows/ci.yml/badge.svg)](https://github.com/rustifork/boggy/actions/workflows/ci.yml)
+
+Lightweight, agentless IoT network vulnerability scanner for Raspberry Pi and other small Linux devices. One ~1.2 MB binary, **zero external Rust crates**, no root privileges.
 
 > Boggy is neither affiliated with, nor used by, nor made by the Iranian APT group Boggy Serpens.
 
+## Why boggy
+
+- **Small**: ~1.23 MB release binary, embedded databases, `std`-only build that works offline.
+- **Quiet**: bounded worker pool and a socket semaphore; fragile IoT devices are not flooded.
+- **Data-driven**: 677 IoT/OT CVEs and 278 default credential pairs live in JSON, not in code.
+- **Verifiable updates**: SHA-256 pinned databases and release binaries, atomic writes.
+
+## Quick start
+
+```sh
+# Build (no crates are downloaded)
+cargo build --release
+
+# Scan the local subnet
+./target/release/boggy --auto
+
+# Or a specific network, with a JSON report
+./target/release/boggy --target 192.168.1.0/24 --output json --out report.json
+```
+
+Prebuilt x86_64 binaries are on the [releases page](https://github.com/rustifork/boggy/releases). After installing one, `boggy update --self` verifies and replaces it.
+
 ## Features
 
-- Local subnet auto-detection, manual CIDR and exclusions
-- Discovery: TCP liveness, ARP sweep, mDNS (6 service types), SSDP/UPnP (3 search targets)
-- TCP port scanning with fast / common / deep / custom port sets
-- Banner grabbing plus HTTP `Server`, `WWW-Authenticate` and page-title extraction
-- Device, vendor and model fingerprinting (150+ signatures)
-- Default credential checks: HTTP Basic, HTTP Digest, web login forms, Telnet, FTP, RTSP
-- Protocol probes: MQTT anonymous, CoAP, SNMP community strings, Redis, Memcached, Modbus, Docker, Elasticsearch, ADB, TR-069
-- UPnP device description parsing (manufacturer, model, firmware, IGD detection)
-- 677-entry CVE database (NVD-derived IoT/OT coverage + curated core) with version-aware matching
-- Vendor-aware credential database with 278 username/password pairs
-- JSON, JSONL and human-readable reports, severity summary, `--fail-on` CI gate
-- Verified, atomic database and binary updates (SHA-256, no redirects, no plain HTTP)
-- **Zero Rust crate dependencies**, ~1.2 MB static-ish binary, no root privileges required
+| Area | What it does |
+| --- | --- |
+| Discovery | ARP sweep, mDNS (6 service types), SSDP/UPnP (3 search targets), TCP liveness |
+| Ports | Fast / common / deep sets, custom ranges, banner grabbing |
+| Fingerprinting | 150+ vendor/device signatures; `Server`, `WWW-Authenticate`, page title, version extraction |
+| Credentials | HTTP Basic, Digest, login forms, Telnet, FTP, RTSP; vendor-aware pairs |
+| Protocol probes | MQTT, CoAP, SNMP, Redis, Memcached, Modbus, Docker, Elasticsearch, ADB, TR-069 |
+| UPnP | Manufacturer, model, firmware, IGD exposure |
+| Vulnerabilities | 677 CVEs with port, keyword, device-class and version gates; CVSS ranking |
+| Reporting | Text, JSON, JSONL; severity summary and CI exit codes |
 
-## Build
+## Scanning
+
+```sh
+boggy --auto
+boggy --target 192.168.1.0/24 --exclude 192.168.1.50/32
+boggy --target 192.168.1.0/24 --fast
+boggy --target 192.168.1.0/24 --deep
+boggy --target 192.168.1.0/24 --ports 22,80,443,8000-8100
+boggy --target 192.168.1.0/24 --passive
+boggy --target 192.168.1.0/24 --rate-limit 32 --timeout 500 -j 8
+boggy --target 192.168.1.0/24 --min-severity high --fail-on critical -v
+```
+
+`--fast` scans 17 top IoT ports, the default scans ~100, `--deep` scans ~170. `--passive` only reports devices discovered through mDNS/SSDP/ARP. `--cred-limit` (default 24) bounds credential attempts per service; `--max-cve` (default 15) bounds CVE findings per host; `--max-hosts` (default 65536) refuses oversized CIDR expansions before allocating them.
+
+### Options
+
+| Option | Meaning |
+| --- | --- |
+| `-t, --target <CIDR>` | Target network, repeatable |
+| `--auto` | Detect the local /24 |
+| `--exclude <CIDR>` | Skip a network, repeatable |
+| `--fast` / `--deep` | Port-set selection |
+| `--ports <SPEC>` | `22,80,443,8000-8100` |
+| `--passive` | Discovery only |
+| `--no-creds` / `--no-cve` | Disable a probe family |
+| `-j, --threads <N>` | Workers (64) |
+| `--rate-limit <N>` | Max simultaneous sockets (auto) |
+| `--timeout <MS>` | Per-probe timeout (800) |
+| `--min-severity <S>` | `info\|low\|medium\|high\|critical` |
+| `--fail-on <S>` | Exit 2 when a finding reaches this severity |
+| `--output text\|json\|jsonl` | Report format |
+| `--out <FILE>` | Write to file |
+| `--cve-file` / `--creds-file` | Override databases |
+| `-v` | Progress on stderr |
+
+Exit codes: `0` clean, `1` usage/scan/update error, `2` `--fail-on` threshold reached.
+
+## Databases and updates
+
+| File | Contents | Local override |
+| --- | --- | --- |
+| `db/cves.json` | 677 CVEs and weak-config rules | `~/.boggy/cves.json` or `--cve-file` |
+| `db/creds.json` | 278 credential pairs + SNMP communities | `~/.boggy/creds.json` or `--creds-file` |
+| `db/manifest.json` | SHA-256 digests and entry counts | `~/.boggy/manifest.json` |
+
+```sh
+boggy update-db                    # both databases, verified
+boggy update-db --cves-only
+boggy update-db --creds-only
+boggy update-db --dry-run          # validate and print, write nothing
+boggy update                       # release check + database refresh
+boggy update --self                # verified binary self-update
+boggy update --check-only
+boggy update-check
+boggy db-info
+boggy selftest
+```
+
+`boggy selftest` runs 13 integrity and parser checks inside the binary, so a Pi with no cargo installed can still verify its installation. `boggy db-info` prints the embedded hashes and shows whether a local override is active.
+
+## Security model
+
+- HTTPS is required by default; `--allow-http` is an explicit opt-in for private mirrors.
+- `curl` (or `wget` as fallback) performs certificate validation; TLS 1.2 is the minimum. No TLS library is linked into the binary.
+- Redirects are disabled for database downloads. Release assets may redirect only to GitHub-controlled hosts.
+- Downloads are size-bounded (8 MB databases, 48 MB binary) and SHA-256 checked against `db/manifest.json` or the release digest / `SHA256SUMS`. Digests are compared in constant time.
+- Both databases are fetched and structurally validated before either destination is touched. Writes use a create-new temp file, `fsync` and atomic rename; databases are mode 0600, the binary 0755. Symlinks are never followed.
+- The in-tree JSON parser enforces depth, node, string and UTF-8 limits. Malformed input is rejected without panics.
+- `--max-hosts` and `--cred-limit` bound resource usage; a counting semaphore caps simultaneous sockets.
+
+Out of scope: TLS inspection, active exploitation, version confirmation via authenticated scans, and zero-day discovery. A CVE match means "this device looks affected" — confirm with the vendor advisory or an authenticated scanner.
+
+Only scan networks you own or are authorized to test.
+
+## Building and testing
 
 ```sh
 cargo build --release
+cargo test                 # 39 unit tests + 8 end-to-end tests
+cargo run -- selftest      # in-binary checks
+cargo fmt --check
 ```
 
-Only the Rust standard library is compiled in. No crates are fetched, so the build works
-offline. HTTPS updates use the system `curl` (or `wget` fallback) with certificate
-verification, TLS 1.2 minimum and protocol pinning to HTTPS.
-
-Cross-compile for Raspberry Pi:
+Cross-compile:
 
 ```sh
 rustup target add aarch64-unknown-linux-gnu
 cargo build --release --target aarch64-unknown-linux-gnu
+scp target/aarch64-unknown-linux-gnu/release/boggy pi@host:/usr/local/bin/
 ```
 
-## Usage
+CI enforces zero crate dependencies, formatting, clippy, database hashes, tests and a <5 MB binary on x86_64, aarch64 and armv7.
 
-```sh
-./target/release/boggy --auto
-./target/release/boggy --target 192.168.1.0/24 --deep --output json --out report.json
-./target/release/boggy --target 192.168.1.0/24 --exclude 192.168.1.50/32 --fast
-./target/release/boggy --target 192.168.1.0/24 --ports 22,80,443,8000-8100
-./target/release/boggy --target 192.168.1.0/24 --passive
-./target/release/boggy --target 192.168.1.0/24 --rate-limit 32 --timeout 500
-./target/release/boggy --target 192.168.1.0/24 --min-severity high --fail-on critical
-./target/release/boggy update-db
-```
+## Troubleshooting
 
-## Concurrency & rate limiting
+| Symptom | Fix |
+| --- | --- |
+| `plain HTTP refused` | Use HTTPS or pass `--allow-http` |
+| `checksum mismatch` | Re-run `update-db`; your mirror or download is stale |
+| `curl and wget are unavailable` | Install `curl` for HTTPS updates |
+| `target expands to N hosts` | Narrow `--target` or raise `--max-hosts` |
+| No CVE findings | Try `--deep`, or check that banners expose a vendor; use `--min-severity info` |
 
-Boggy uses a bounded worker pool over hosts; each host scans its ports sequentially.
-A counting semaphore caps concurrent connections (`--rate-limit`, default `threads*2`)
-to avoid overwhelming fragile IoT devices. Use `--passive` for discovery-only scanning
-with no active probes. `--cred-limit` bounds credential attempts per service (default 24).
+## Project
 
-## Databases
+- [Architecture](docs/architecture.md)
+- [Usage details](docs/usage.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 
-Two JSON databases ship embedded in the binary and can be overridden at runtime:
-
-| File | Purpose | Local override |
-| --- | --- | --- |
-| `db/cves.json` | CVEs, weak configs, version constraints | `~/.boggy/cves.json` or `--cve-file` |
-| `db/creds.json` | Generic and vendor-specific credential pairs, SNMP communities | `~/.boggy/creds.json` or `--creds-file` |
-
-CVE entries can require a banner keyword, an open port, a device class or an affected
-version below a threshold; findings are de-duplicated, ranked by CVSS and capped per
-host with `--max-cve`.
-
-## Secure updates
-
-```sh
-boggy update-db                 # verified CVE + credential databases
-boggy update-db --cves-only     # one database only
-boggy update                    # release check + verified database refresh
-boggy update --self             # verified binary self-update
-boggy update-check              # version check only, no writes
-boggy db-info                   # embedded hashes and active override paths
-```
-
-Every download is bounded (8 MB for databases, 48 MB for binaries), refuses redirects
-and plain HTTP by default, and is verified against SHA-256 digests from
-`db/manifest.json` before anything is written. Both databases are fetched and validated
-first; writes use a create-new temp file, `fsync` and atomic rename (0600 for databases,
-0755 for the binary), so a failed update never leaves a half-written or symlink-hijacked
-file. `--no-verify` and `--allow-http` are available for private mirrors but are not
-recommended.
-
-`boggy update --self` downloads the release asset matching the local architecture,
-checks it is an ELF binary, verifies its SHA-256 (release digest or `SHA256SUMS`), then
-atomically replaces the running executable. `boggy update-check` compares the latest
-GitHub release tag with the running version without changing anything.
-
-No TLS library is linked into the binary: `curl` performs certificate validation, and
-redirect targets are restricted to GitHub-controlled hosts. The JSON parser is internal,
-with depth, node, string and size limits, so malformed databases cannot panic or exhaust
-memory.
-
-Coverage is intentionally IoT-focused and agentless: a match means "this device looks
-affected", not "this vulnerability is confirmed exploitable". Confirm findings with an
-authenticated scan or a vendor advisory before acting.
-
-## Safety
-
-Only scan networks you own or are authorized to test.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## License
-
-Dual-licensed under MIT or Apache-2.0.
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
