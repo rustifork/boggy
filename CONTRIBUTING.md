@@ -12,7 +12,7 @@ CI additionally builds for x86_64, aarch64 and armv7 and checks the binary stays
 
 ## Guidelines
 
-- Keep the release binary under 5 MB. Prefer `std` over new dependencies.
+- Keep the release binary under 5 MB. **No external crates**: use `std` and the in-tree `json`, `net::md5` and `net::sha256` modules. CI fails if `cargo tree` lists a dependency.
 - Add unit tests for new parsing/scanning logic; no network calls in unit tests.
 - Keep probes bounded: timeouts, attempt limits and a socket semaphore are mandatory.
 - Do not add root-dependent operations (raw sockets) to the scanning path.

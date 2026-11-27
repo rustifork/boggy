@@ -1,14 +1,12 @@
 //! Secure database / binary updates: pinned digests, no redirects, bounded downloads,
 //! strict schema validation and atomic replacement.
 
+use crate::json::Json;
 use crate::net::sha256;
-use serde::Deserialize;
-use serde_json::Value;
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 pub const CVE_URL: &str = "https://raw.githubusercontent.com/rustifork/boggy/main/db/cves.json";
 pub const CREDS_URL: &str = "https://raw.githubusercontent.com/rustifork/boggy/main/db/creds.json";
@@ -55,35 +53,92 @@ impl Default for UpdateOpts {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 struct ManifestFile {
     file: String,
     sha256: String,
     entries: usize,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 struct Manifest {
-    version: u32,
     cves: ManifestFile,
     creds: ManifestFile,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 struct ReleaseAsset {
     name: String,
     browser_download_url: String,
-    #[serde(default)]
     digest: String,
-    #[serde(default)]
     size: usize,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 struct Release {
     tag_name: String,
-    #[serde(default)]
     assets: Vec<ReleaseAsset>,
+}
+
+fn manifest_file(value: Option<&Json>) -> Option<ManifestFile> {
+    let value = value?;
+    Some(ManifestFile {
+        file: value.get("file")?.as_str()?.to_string(),
+        sha256: value.get("sha256")?.as_str()?.to_string(),
+        entries: value.get("entries")?.as_u64()? as usize,
+    })
+}
+
+fn parse_manifest(data: &[u8]) -> Result<Manifest, String> {
+    let root = crate::json::parse(data)?;
+    if root.get("version").and_then(Json::as_u64) != Some(1) {
+        return Err(format!(
+            "unsupported manifest version {:?}",
+            root.get("version")
+        ));
+    }
+    Ok(Manifest {
+        cves: manifest_file(root.get("cves")).ok_or("invalid cves manifest entry")?,
+        creds: manifest_file(root.get("creds")).ok_or("invalid creds manifest entry")?,
+    })
+}
+
+fn parse_release(data: &[u8]) -> Result<Release, String> {
+    let root = crate::json::parse(data)?;
+    let tag_name = root
+        .get("tag_name")
+        .and_then(Json::as_str)
+        .ok_or("release has no tag_name")?
+        .to_string();
+    let mut assets = Vec::new();
+    if let Some(rows) = root.get("assets").and_then(Json::as_arr) {
+        for row in rows {
+            let name = row
+                .get("name")
+                .and_then(Json::as_str)
+                .unwrap_or("")
+                .to_string();
+            let url = row
+                .get("browser_download_url")
+                .and_then(Json::as_str)
+                .unwrap_or("")
+                .to_string();
+            if name.is_empty() || url.is_empty() {
+                continue;
+            }
+            assets.push(ReleaseAsset {
+                name,
+                browser_download_url: url,
+                digest: row
+                    .get("digest")
+                    .and_then(Json::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                size: row.get("size").and_then(Json::as_u64).unwrap_or(0) as usize,
+            });
+        }
+    }
+    Ok(Release { tag_name, assets })
 }
 
 /// Validate the scheme before any network or filesystem access.
@@ -104,65 +159,134 @@ fn checked_url(url: &str, allow_http: bool) -> Result<(), String> {
     Err(format!("unsupported URL scheme: {}", url))
 }
 
-pub fn fetch_bytes(url: &str, max_bytes: usize, allow_http: bool) -> Result<Vec<u8>, String> {
-    checked_url(url, allow_http)?;
+struct Fetched {
+    status: u16,
+    location: Option<String>,
+    body: Vec<u8>,
+}
+
+fn temp_file(tag: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        ".boggy-{}-{}-{}",
+        tag,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0)
+    ))
+}
+
+/// HTTPS without a crate: the system curl/wget handles TLS certificate
+/// verification. Redirects are disabled and protocols pinned to HTTPS.
+fn curl_fetch(url: &str, max_bytes: usize, allow_http: bool) -> Result<Fetched, String> {
     if let Some(path) = url.strip_prefix("file://") {
-        let bytes = fs::read(path).map_err(|e| format!("read {}: {}", path, e))?;
-        if bytes.len() > max_bytes {
+        let body = fs::read(path).map_err(|e| format!("read {}: {}", path, e))?;
+        if body.len() > max_bytes {
             return Err(format!("{} is larger than {} bytes", path, max_bytes));
         }
-        return Ok(bytes);
+        return Ok(Fetched {
+            status: 200,
+            location: None,
+            body,
+        });
     }
 
-    #[cfg(feature = "https")]
-    {
-        let agent = ureq::builder()
-            .timeout(Duration::from_secs(30))
-            .timeout_connect(Duration::from_secs(8))
-            .redirects(0) // never follow a redirect to another host / scheme
-            .user_agent("boggy-update/0.3")
-            .build();
-        let resp = agent
-            .get(url)
-            .call()
-            .map_err(|e| format!("GET {}: {}", url, e))?;
-        if !(200..300).contains(&resp.status()) {
-            return Err(format!("GET {} returned HTTP {}", url, resp.status()));
+    let header_path = temp_file("headers");
+    let body_path = temp_file("body");
+    let cleanup = || {
+        let _ = fs::remove_file(&header_path);
+        let _ = fs::remove_file(&body_path);
+    };
+    let protocols = if allow_http { "=http,https" } else { "=https" };
+    let args = vec![
+        "-sS".to_string(),
+        "--dump-header".into(),
+        header_path.to_string_lossy().into_owned(),
+        "-o".into(),
+        body_path.to_string_lossy().into_owned(),
+        "--max-redirs".into(),
+        "0".into(),
+        "--connect-timeout".into(),
+        "8".into(),
+        "--max-time".into(),
+        "60".into(),
+        "--proto".into(),
+        protocols.into(),
+        "--proto-redir".into(),
+        "=https".into(),
+        "--tlsv1.2".into(),
+        url.to_string(),
+    ];
+    let result = std::process::Command::new("curl").args(&args).output();
+    let output = match result {
+        Ok(output) => output,
+        Err(_) => {
+            // wget fallback: no header capture, so redirects are not supported.
+            let body_arg = format!("-O{}", body_path.display());
+            let fallback = std::process::Command::new("wget")
+                .args(["-q", &body_arg, "--max-redirect=0", url])
+                .output()
+                .map_err(|e| format!("curl and wget are unavailable: {}", e))?;
+            if !fallback.status.success() {
+                cleanup();
+                return Err(format!("GET {} failed", url));
+            }
+            let body = fs::read(&body_path).unwrap_or_default();
+            cleanup();
+            if body.len() > max_bytes {
+                return Err(format!("{} exceeds the {} byte limit", url, max_bytes));
+            }
+            return Ok(Fetched {
+                status: 200,
+                location: None,
+                body,
+            });
         }
-        let mut limited = resp.into_reader().take(max_bytes as u64 + 1);
-        let mut out = Vec::new();
-        limited
-            .read_to_end(&mut out)
-            .map_err(|e| format!("read {}: {}", url, e))?;
-        if out.len() > max_bytes {
-            return Err(format!("{} exceeds the {} byte limit", url, max_bytes));
-        }
-        Ok(out)
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        cleanup();
+        return Err(format!("GET {} failed: {}", url, stderr));
     }
-    #[cfg(not(feature = "https"))]
-    {
-        let mut args = vec!["-fsSL".to_string(), "--max-redirs".into(), "0".into()];
-        if !allow_http {
-            args.push("--proto".into());
-            args.push("=https".into());
+
+    let headers = fs::read_to_string(&header_path).unwrap_or_default();
+    let mut status = 0u16;
+    let mut location = None;
+    for line in headers.lines() {
+        let line = line.trim_end_matches('\r');
+        if let Some(rest) = line.strip_prefix("HTTP/") {
+            if let Some(code) = rest.split_whitespace().nth(1) {
+                if let Ok(code) = code.parse::<u16>() {
+                    status = code;
+                }
+            }
         }
-        args.push(url.to_string());
-        let out = std::process::Command::new("curl")
-            .args(&args)
-            .output()
-            .map_err(|e| format!("curl: {}", e))?;
-        if !out.status.success() {
-            return Err(format!(
-                "GET {} failed (curl exit {:?})",
-                url,
-                out.status.code()
-            ));
+        if let Some(value) = line.get(9..) {
+            if line[..9].eq_ignore_ascii_case("Location:") {
+                location = Some(value.trim().to_string());
+            }
         }
-        if out.stdout.len() > max_bytes {
-            return Err(format!("{} exceeds the {} byte limit", url, max_bytes));
-        }
-        Ok(out.stdout)
     }
+    let body = fs::read(&body_path).unwrap_or_default();
+    cleanup();
+    if body.len() > max_bytes {
+        return Err(format!("{} exceeds the {} byte limit", url, max_bytes));
+    }
+    Ok(Fetched {
+        status,
+        location,
+        body,
+    })
+}
+
+pub fn fetch_bytes(url: &str, max_bytes: usize, allow_http: bool) -> Result<Vec<u8>, String> {
+    checked_url(url, allow_http)?;
+    let fetched = curl_fetch(url, max_bytes, allow_http)?;
+    if !(200..300).contains(&fetched.status) {
+        return Err(format!("GET {} returned HTTP {}", url, fetched.status));
+    }
+    Ok(fetched.body)
 }
 
 const ASSET_HOSTS: &[&str] = &[
@@ -203,52 +327,20 @@ fn redirect_target(location: &str, current: &str, allow_http: bool) -> Result<St
 pub fn fetch_asset(url: &str, max_bytes: usize, allow_http: bool) -> Result<Vec<u8>, String> {
     let mut current = url.to_string();
     for _ in 0..4 {
-        match fetch_asset_hop(&current, max_bytes, allow_http)? {
-            Fetched::Bytes(bytes) => return Ok(bytes),
-            Fetched::Redirect(next) => current = next,
+        let fetched = curl_fetch(&current, max_bytes, allow_http)?;
+        if (300..400).contains(&fetched.status) {
+            let location = fetched
+                .location
+                .ok_or_else(|| format!("redirect from {} has no Location", current))?;
+            current = redirect_target(&location, &current, allow_http)?;
+            continue;
         }
+        if !(200..300).contains(&fetched.status) {
+            return Err(format!("GET {} returned HTTP {}", current, fetched.status));
+        }
+        return Ok(fetched.body);
     }
     Err("too many asset redirects".into())
-}
-
-enum Fetched {
-    Bytes(Vec<u8>),
-    Redirect(String),
-}
-
-#[cfg(feature = "https")]
-fn fetch_asset_hop(url: &str, max_bytes: usize, allow_http: bool) -> Result<Fetched, String> {
-    let agent = ureq::builder()
-        .timeout(Duration::from_secs(60))
-        .redirects(0)
-        .user_agent("boggy-update/0.3")
-        .build();
-    let resp = agent.get(url).call().map_err(|e| e.to_string())?;
-    if (300..400).contains(&resp.status()) {
-        let location = resp
-            .header("Location")
-            .ok_or_else(|| format!("redirect from {} has no Location", url))?;
-        return Ok(Fetched::Redirect(redirect_target(
-            location, url, allow_http,
-        )?));
-    }
-    if !(200..300).contains(&resp.status()) {
-        return Err(format!("GET {} returned HTTP {}", url, resp.status()));
-    }
-    let mut out = Vec::new();
-    resp.into_reader()
-        .take(max_bytes as u64 + 1)
-        .read_to_end(&mut out)
-        .map_err(|e| e.to_string())?;
-    if out.len() > max_bytes {
-        return Err(format!("{} exceeds the {} byte limit", url, max_bytes));
-    }
-    Ok(Fetched::Bytes(out))
-}
-
-#[cfg(not(feature = "https"))]
-fn fetch_asset_hop(url: &str, max_bytes: usize, allow_http: bool) -> Result<Vec<u8>, Fetched> {
-    fetch_bytes(url, max_bytes, allow_http).map(Fetched::Bytes)
 }
 
 fn safe_file_name(name: &str) -> Result<&str, String> {
@@ -316,29 +408,31 @@ fn set_permissions(_path: &Path, _executable: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn as_array(value: &Value) -> Result<&Vec<Value>, String> {
-    value
-        .as_array()
-        .ok_or_else(|| "expected a JSON array".into())
+fn as_array(value: &Json) -> Result<&[Json], String> {
+    value.as_arr().ok_or_else(|| "expected a JSON array".into())
 }
 
-fn as_object(value: &Value) -> Result<&serde_json::Map<String, Value>, String> {
+fn as_object(value: &Json) -> Result<&[(String, Json)], String> {
     value
-        .as_object()
+        .as_obj()
         .ok_or_else(|| "expected a JSON object".into())
 }
 
-fn text<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
+fn field<'a>(obj: &'a [(String, Json)], key: &str) -> Option<&'a Json> {
+    obj.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+}
+
+fn text<'a>(value: &'a Json, name: &str) -> Result<&'a str, String> {
     value
         .as_str()
         .filter(|s| !s.is_empty() && s.len() <= 2048)
-        .ok_or_else(|| format!("invalid {} field", field))
+        .ok_or_else(|| format!("invalid {} field", name))
 }
 
-/// Structural validation, independent of serde's field skipping.
+/// Structural validation, independent of the scanner's tolerant decoders.
 pub fn validate_cves(bytes: &[u8]) -> Result<usize, String> {
-    let value: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-    let rows = as_array(&value)?;
+    let root = crate::json::parse(bytes)?;
+    let rows = as_array(&root)?;
     if rows.len() < 100 || rows.len() > MAX_ENTRIES {
         return Err(format!("unexpected CVE entry count: {}", rows.len()));
     }
@@ -346,17 +440,21 @@ pub fn validate_cves(bytes: &[u8]) -> Result<usize, String> {
     let mut ids = HashSet::new();
     for row in rows {
         let obj = as_object(row)?;
-        let id = text(&obj["id"], "id")?;
+        let id = text(field(obj, "id").ok_or("missing id")?, "id")?;
         if !ids.insert(id) {
             return Err(format!("duplicate CVE id: {}", id));
         }
-        let severity = text(&obj["severity"], "severity")?.to_ascii_lowercase();
+        let severity = text(
+            field(obj, "severity").ok_or("missing severity")?,
+            "severity",
+        )?
+        .to_ascii_lowercase();
         if !allowed.contains(&severity.as_str()) {
             return Err(format!("invalid severity: {}", severity));
         }
-        text(&obj["title"], "title")?;
-        text(&obj["detail"], "detail")?;
-        if let Some(ports) = obj.get("ports") {
+        text(field(obj, "title").ok_or("missing title")?, "title")?;
+        text(field(obj, "detail").ok_or("missing detail")?, "detail")?;
+        if let Some(ports) = field(obj, "ports") {
             for port in as_array(ports)? {
                 let n = port.as_u64().ok_or("invalid port")?;
                 if n > u16::MAX as u64 {
@@ -364,31 +462,34 @@ pub fn validate_cves(bytes: &[u8]) -> Result<usize, String> {
                 }
             }
         }
-        for field in ["keywords", "all_keywords", "exclude_keywords"] {
-            if let Some(words) = obj.get(field) {
+        for name in ["keywords", "all_keywords", "exclude_keywords"] {
+            if let Some(words) = field(obj, name) {
                 for word in as_array(words)? {
                     if word.as_str().map(|s| s.len() > 64).unwrap_or(true) {
-                        return Err(format!("invalid {} entry", field));
+                        return Err(format!("invalid {} entry", name));
                     }
                 }
             }
         }
-        if let Some(cvss) = obj.get("cvss") {
+        if let Some(cvss) = field(obj, "cvss") {
             let score = cvss.as_f64().ok_or("invalid cvss")?;
             if !(0.0..=10.0).contains(&score) {
                 return Err("cvss out of range".into());
             }
         }
-        if let Some(affected) = obj.get("affected") {
+        if let Some(affected) = field(obj, "affected") {
             for a in as_array(affected)? {
                 let a = as_object(a)?;
-                text(&a["product"], "affected.product")?;
-                text(&a["below"], "affected.below")?;
+                text(
+                    field(a, "product").ok_or("missing affected.product")?,
+                    "product",
+                )?;
+                text(field(a, "below").ok_or("missing affected.below")?, "below")?;
             }
         }
-        let gated = obj.get("ports").is_some()
-            || obj.get("keywords").is_some()
-            || obj.get("device_types").is_some();
+        let gated = field(obj, "ports").is_some()
+            || field(obj, "keywords").is_some()
+            || field(obj, "device_types").is_some();
         if !gated {
             return Err(format!("{} has no matching gate", id));
         }
@@ -396,19 +497,19 @@ pub fn validate_cves(bytes: &[u8]) -> Result<usize, String> {
     Ok(rows.len())
 }
 
-fn validate_pairs(value: &Value, field: &str) -> Result<usize, String> {
+fn validate_pairs(value: &Json, name: &str) -> Result<usize, String> {
     let rows = as_array(value)?;
     if rows.len() > 2000 {
-        return Err(format!("too many pairs in {}", field));
+        return Err(format!("too many pairs in {}", name));
     }
     for row in rows {
         let pair = as_array(row)?;
         if pair.len() != 2 {
-            return Err(format!("invalid pair in {}", field));
+            return Err(format!("invalid pair in {}", name));
         }
         for item in pair {
             if item.as_str().map(|s| s.len() > 128).unwrap_or(true) {
-                return Err(format!("invalid credential in {}", field));
+                return Err(format!("invalid credential in {}", name));
             }
         }
     }
@@ -416,19 +517,16 @@ fn validate_pairs(value: &Value, field: &str) -> Result<usize, String> {
 }
 
 pub fn validate_creds(bytes: &[u8]) -> Result<usize, String> {
-    let root: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-    let obj = as_object(&root)?;
-    let generic = as_object(obj.get("generic").ok_or("missing generic credentials")?)?;
+    let root = crate::json::parse(bytes)?;
+    let generic = as_object(field(as_object(&root)?, "generic").ok_or("missing generic")?)?;
     let mut count = 0;
     for protocol in ["http", "telnet", "ftp", "rtsp"] {
         count += validate_pairs(
-            generic
-                .get(protocol)
-                .ok_or_else(|| format!("missing {}", protocol))?,
+            field(generic, protocol).ok_or_else(|| format!("missing {}", protocol))?,
             protocol,
         )?;
     }
-    if let Some(vendors) = obj.get("vendors") {
+    if let Some(vendors) = field(as_object(&root)?, "vendors") {
         let vendors = as_object(vendors)?;
         if vendors.len() > 500 {
             return Err("too many vendor blocks".into());
@@ -439,13 +537,13 @@ pub fn validate_creds(bytes: &[u8]) -> Result<usize, String> {
             }
             let set = as_object(set)?;
             for protocol in ["http", "telnet", "ftp", "rtsp"] {
-                if let Some(pairs) = set.get(protocol) {
+                if let Some(pairs) = field(set, protocol) {
                     count += validate_pairs(pairs, protocol)?;
                 }
             }
         }
     }
-    if let Some(communities) = obj.get("snmp") {
+    if let Some(communities) = field(as_object(&root)?, "snmp") {
         let communities = as_array(communities)?;
         if communities.len() > 500 {
             return Err("too many SNMP communities".into());
@@ -523,11 +621,7 @@ pub fn update_databases(opts: &UpdateOpts) -> Result<String, String> {
 
     if opts.verify {
         let raw = fetch_bytes(&opts.manifest_url, MAX_MANIFEST_BYTES, opts.allow_http)?;
-        let manifest: Manifest =
-            serde_json::from_slice(&raw).map_err(|e| format!("invalid manifest: {}", e))?;
-        if manifest.version != 1 {
-            return Err(format!("unsupported manifest version {}", manifest.version));
-        }
+        let manifest = parse_manifest(&raw)?;
         safe_file_name(&manifest.cves.file)?;
         safe_file_name(&manifest.creds.file)?;
         valid_hash(&manifest.cves.sha256)?;
@@ -625,8 +719,7 @@ fn is_newer(latest: &str, current: &str) -> bool {
 
 pub fn check_latest() -> Result<UpdateCheck, String> {
     let raw = fetch_bytes(RELEASES_URL, MAX_RELEASE_BYTES, false)?;
-    let release: Release =
-        serde_json::from_slice(&raw).map_err(|e| format!("invalid release response: {}", e))?;
+    let release = parse_release(&raw)?;
     let assets = release.assets.iter().map(|a| a.name.clone()).collect();
     let newer = is_newer(&release.tag_name, env!("CARGO_PKG_VERSION"));
     Ok(UpdateCheck {
@@ -683,8 +776,7 @@ pub fn self_update(allow_http: bool) -> Result<String, String> {
         ));
     }
     let raw = fetch_bytes(RELEASES_URL, MAX_RELEASE_BYTES, allow_http)?;
-    let release: Release =
-        serde_json::from_slice(&raw).map_err(|e| format!("invalid release response: {}", e))?;
+    let release = parse_release(&raw)?;
     let asset = release
         .assets
         .iter()
@@ -763,7 +855,7 @@ mod tests {
 
     #[test]
     fn manifest_is_consistent() {
-        let manifest: Manifest = serde_json::from_str(include_str!("../db/manifest.json")).unwrap();
+        let manifest = parse_manifest(include_bytes!("../db/manifest.json")).unwrap();
         assert!(sha256::matches_hex(
             include_bytes!("../db/cves.json"),
             &manifest.cves.sha256

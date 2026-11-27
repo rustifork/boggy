@@ -2,37 +2,79 @@
 //! so new devices can be added without recompiling.
 
 use crate::iot::protocols;
+use crate::json::Json;
 use crate::net::http::{self, HttpRequest, HttpResponse};
 use crate::types::Finding;
-use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpStream};
 use std::time::Duration;
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default)]
 struct CredSet {
-    #[serde(default)]
     http: Vec<(String, String)>,
-    #[serde(default)]
     telnet: Vec<(String, String)>,
-    #[serde(default)]
     ftp: Vec<(String, String)>,
-    #[serde(default)]
     rtsp: Vec<(String, String)>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default)]
 struct CredDb {
-    #[serde(default)]
     generic: CredSet,
-    #[serde(default)]
     vendors: BTreeMap<String, CredSet>,
-    #[serde(default)]
     snmp: Vec<String>,
 }
 
 static CREDS_DB: &str = include_str!("../../db/creds.json");
+
+fn pairs(value: Option<&Json>) -> Vec<(String, String)> {
+    value
+        .and_then(Json::as_arr)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    let items = row.as_arr()?;
+                    if items.len() != 2 {
+                        return None;
+                    }
+                    Some((items[0].string(), items[1].string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn cred_set(value: Option<&Json>) -> CredSet {
+    let empty = Json::Null;
+    let value = value.unwrap_or(&empty);
+    CredSet {
+        http: pairs(value.get("http")),
+        telnet: pairs(value.get("telnet")),
+        ftp: pairs(value.get("ftp")),
+        rtsp: pairs(value.get("rtsp")),
+    }
+}
+
+fn decode(data: &str) -> Option<CredDb> {
+    let root = crate::json::parse(data.as_bytes()).ok()?;
+    let generic = cred_set(root.get("generic"));
+    let mut vendors = BTreeMap::new();
+    if let Some(rows) = root.get("vendors").and_then(Json::as_obj) {
+        for (name, value) in rows {
+            vendors.insert(name.clone(), cred_set(Some(value)));
+        }
+    }
+    let snmp = root
+        .get("snmp")
+        .and_then(Json::as_arr)
+        .map(|rows| rows.iter().map(|v| v.string()).collect())
+        .unwrap_or_default();
+    Some(CredDb {
+        generic,
+        vendors,
+        snmp,
+    })
+}
 
 fn load(explicit: Option<&str>) -> CredDb {
     let mut candidates: Vec<String> = Vec::new();
@@ -46,12 +88,14 @@ fn load(explicit: Option<&str>) -> CredDb {
     candidates.push("/etc/boggy/creds.json".to_string());
     for path in &candidates {
         if let Ok(data) = std::fs::read_to_string(path) {
-            if let Ok(db) = serde_json::from_str::<CredDb>(&data) {
-                return db;
+            if let Some(db) = decode(&data) {
+                if !db.generic.http.is_empty() {
+                    return db;
+                }
             }
         }
     }
-    serde_json::from_str(CREDS_DB).unwrap_or_default()
+    decode(CREDS_DB).unwrap_or_default()
 }
 
 fn vendor_set<'a>(db: &'a CredDb, vendor: &str) -> Option<&'a CredSet> {
@@ -567,7 +611,7 @@ mod tests {
 
     #[test]
     fn db_loads_and_selects() {
-        let db: CredDb = serde_json::from_str(CREDS_DB).unwrap();
+        let db = decode(CREDS_DB).unwrap();
         assert!(!db.generic.http.is_empty());
         assert!(vendor_set(&db, "hikvision").is_some());
         let pairs = select(&db, "http", "Hikvision", 10);

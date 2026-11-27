@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0
+
+- **Zero external crates**: removed clap, serde, serde_json and ureq. CLI parsing,
+  JSON reading/writing and SHA-256/MD5 are implemented in-tree with hard input limits.
+- Release binary drops from ~2.7 MB to ~1.2 MB; offline builds with no crate downloads.
+- HTTPS updates via system `curl` (wget fallback): certificate verification, TLS >= 1.2,
+  `--proto =https`, no redirects, host allowlist for release asset redirects.
+- Bounded JSON parser (depth 64, node/string caps, strict UTF-8 and escapes); malformed
+  databases are rejected without panics.
+- 38 unit tests, including CLI parsing, JSON roundtrips and manifest consistency.
+
 ## 0.3.0
 
 - Update commands: `update-db` (verified), `update` (release check + DB refresh or

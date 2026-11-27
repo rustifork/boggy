@@ -1,10 +1,11 @@
 mod cli;
 mod iot;
+mod json;
 mod net;
 mod types;
 mod update;
 
-use crate::cli::{Cli, Command, ScanOpts};
+use crate::cli::{Command, ScanOpts};
 use crate::iot::creds as dc;
 use crate::iot::{cve, fingerprints, protocols, upnp};
 use crate::net::discover;
@@ -12,7 +13,6 @@ use crate::net::ports;
 use crate::net::subnet::Subnet;
 use crate::types::{Finding, HostResult, PortResult, ScanReport, Severity, Summary};
 use crate::update as upd;
-use clap::Parser;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
@@ -443,11 +443,11 @@ fn render_text(r: &ScanReport) -> String {
 
 fn build_report_text(report: &ScanReport, output: &str) -> String {
     match output {
-        "json" => serde_json::to_string_pretty(report).unwrap_or_default(),
+        "json" => report.to_json().pretty(),
         "jsonl" => report
             .hosts
             .iter()
-            .filter_map(|h| serde_json::to_string(h).ok())
+            .map(|h| h.to_json().compact())
             .collect::<Vec<_>>()
             .join("\n"),
         _ => render_text(report),
@@ -455,7 +455,21 @@ fn build_report_text(report: &ScanReport, output: &str) -> String {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let cli = match cli::parse(std::env::args().skip(1)) {
+        Ok(cli) => cli,
+        Err(cli::ParseError::Help(text)) => {
+            println!("{}", text);
+            return;
+        }
+        Err(cli::ParseError::Version) => {
+            println!("boggy {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        Err(cli::ParseError::Message(message)) => {
+            eprintln!("boggy: {}", message);
+            std::process::exit(1);
+        }
+    };
 
     match &cli.command {
         Some(Command::UpdateDb { db }) => {

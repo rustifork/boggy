@@ -88,3 +88,5 @@ scp target/aarch64-unknown-linux-gnu/release/boggy pi@host:/usr/local/bin/
 ```
 
 No root privileges are required (TCP connect, UDP probes, multicast discovery).
+`curl` (or `wget`) must be installed for `update-db` / `update` HTTPS downloads; the
+scanner itself needs no runtime dependency beyond the binary and its JSON database files.

@@ -13,6 +13,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: No external crate dependencies
+        run: test "$(cargo tree --prefix none -e normal | wc -l)" -eq 1
       - name: Format
         run: cargo fmt --check
       - name: Clippy

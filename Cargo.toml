@@ -1,6 +1,6 @@
 [package]
 name = "boggy"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["rustifork"]
 license = "MIT OR Apache-2.0"
@@ -8,19 +8,9 @@ description = "Lightweight agentless IoT network vulnerability scanner for Raspb
 repository = "https://github.com/rustifork/boggy"
 readme = "README.md"
 
-[dependencies]
-ureq = { version = "2", optional = true, default-features = false, features = ["tls"] }
-clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
-serde = { version = "1", default-features = false, features = ["derive", "std"] }
-serde_json = { version = "1", default-features = false, features = ["std"] }
-
 [profile.release]
 opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
-
-[features]
-default = ["https"]
-https = ["dep:ureq"]

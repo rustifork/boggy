@@ -18,13 +18,17 @@ Lightweight, agentless IoT network vulnerability scanner. Runs on Raspberry Pi a
 - Vendor-aware credential database with 278 username/password pairs
 - JSON, JSONL and human-readable reports, severity summary, `--fail-on` CI gate
 - Verified, atomic database and binary updates (SHA-256, no redirects, no plain HTTP)
-- Single static-ish binary around 2.6 MB, no root privileges required
+- **Zero Rust crate dependencies**, ~1.2 MB static-ish binary, no root privileges required
 
 ## Build
 
 ```sh
 cargo build --release
 ```
+
+Only the Rust standard library is compiled in. No crates are fetched, so the build works
+offline. HTTPS updates use the system `curl` (or `wget` fallback) with certificate
+verification, TLS 1.2 minimum and protocol pinning to HTTPS.
 
 Cross-compile for Raspberry Pi:
 
@@ -89,6 +93,11 @@ recommended.
 checks it is an ELF binary, verifies its SHA-256 (release digest or `SHA256SUMS`), then
 atomically replaces the running executable. `boggy update-check` compares the latest
 GitHub release tag with the running version without changing anything.
+
+No TLS library is linked into the binary: `curl` performs certificate validation, and
+redirect targets are restricted to GitHub-controlled hosts. The JSON parser is internal,
+with depth, node, string and size limits, so malformed databases cannot panic or exhaust
+memory.
 
 Coverage is intentionally IoT-focused and agentless: a match means "this device looks
 affected", not "this vulnerability is confirmed exploitable". Confirm findings with an

@@ -2,45 +2,106 @@
 //! require a banner keyword, an open port, a device class, or an affected version.
 
 use crate::iot::fingerprints::{version_lt, versions};
+use crate::json::Json;
 use crate::types::{Finding, HostResult, PortResult, Severity};
-use serde::Deserialize;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 struct Affected {
     product: String,
     below: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 struct CveEntry {
     id: String,
     cve: Option<String>,
     severity: String,
     title: String,
     detail: String,
-    #[serde(default)]
     cvss: Option<f32>,
-    #[serde(default)]
     vendor: Option<String>,
-    #[serde(default)]
     product: Option<String>,
-    #[serde(default)]
     ports: Option<Vec<u16>>,
-    #[serde(default)]
     keywords: Option<Vec<String>>,
-    #[serde(default)]
     all_keywords: Option<Vec<String>>,
-    #[serde(default)]
     exclude_keywords: Option<Vec<String>>,
-    #[serde(default)]
     device_types: Option<Vec<String>>,
-    #[serde(default)]
     affected: Option<Vec<Affected>>,
-    #[serde(default)]
     reference: Option<String>,
 }
 
 static CVE_DB: &str = include_str!("../../db/cves.json");
+
+fn strings(value: Option<&Json>) -> Option<Vec<String>> {
+    value.and_then(Json::as_arr).map(|items| {
+        items
+            .iter()
+            .map(|v| v.string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    })
+}
+
+fn ports(value: Option<&Json>) -> Option<Vec<u16>> {
+    value.and_then(Json::as_arr).map(|items| {
+        items
+            .iter()
+            .filter_map(|v| v.as_u64())
+            .filter(|n| *n <= u16::MAX as u64)
+            .map(|n| n as u16)
+            .collect()
+    })
+}
+
+fn entry(value: &Json) -> Option<CveEntry> {
+    let id = value.get("id")?.as_str()?.to_string();
+    let severity = value.get("severity")?.as_str()?.to_string();
+    let title = value.get("title")?.as_str()?.to_string();
+    let detail = value.get("detail")?.as_str()?.to_string();
+    let affected = value.get("affected").and_then(Json::as_arr).map(|items| {
+        items
+            .iter()
+            .filter_map(|a| {
+                Some(Affected {
+                    product: a.get("product")?.as_str()?.to_string(),
+                    below: a.get("below")?.as_str()?.to_string(),
+                })
+            })
+            .collect()
+    });
+    Some(CveEntry {
+        id,
+        cve: value.get("cve").and_then(Json::as_str).map(str::to_string),
+        severity,
+        title,
+        detail,
+        cvss: value.get("cvss").and_then(Json::as_f64).map(|v| v as f32),
+        vendor: value
+            .get("vendor")
+            .and_then(Json::as_str)
+            .map(str::to_string),
+        product: value
+            .get("product")
+            .and_then(Json::as_str)
+            .map(str::to_string),
+        ports: ports(value.get("ports")),
+        keywords: strings(value.get("keywords")),
+        all_keywords: strings(value.get("all_keywords")),
+        exclude_keywords: strings(value.get("exclude_keywords")),
+        device_types: strings(value.get("device_types")),
+        affected,
+        reference: value
+            .get("reference")
+            .and_then(Json::as_str)
+            .map(str::to_string),
+    })
+}
+
+fn decode(data: &str) -> Option<Vec<CveEntry>> {
+    let root = crate::json::parse(data.as_bytes()).ok()?;
+    let rows = root.as_arr()?;
+    Some(rows.iter().filter_map(entry).collect())
+}
 
 fn load(explicit: Option<&str>) -> Vec<CveEntry> {
     let mut candidates: Vec<String> = Vec::new();
@@ -54,28 +115,28 @@ fn load(explicit: Option<&str>) -> Vec<CveEntry> {
     candidates.push("/etc/boggy/cves.json".to_string());
     for path in &candidates {
         if let Ok(data) = std::fs::read_to_string(path) {
-            if let Ok(v) = serde_json::from_str::<Vec<CveEntry>>(&data) {
-                return v;
+            if let Some(db) = decode(&data) {
+                if !db.is_empty() {
+                    return db;
+                }
             }
         }
     }
-    serde_json::from_str(CVE_DB).unwrap_or_default()
+    decode(CVE_DB).unwrap_or_default()
 }
 
 fn fingerprint_text(host: &HostResult, ports: &[PortResult]) -> String {
     let mut parts: Vec<String> = Vec::new();
     for p in ports {
-        if let Some(b) = &p.banner {
-            parts.push(b.clone());
-        }
-        if let Some(s) = &p.server {
-            parts.push(s.clone());
-        }
-        if let Some(t) = &p.title {
-            parts.push(t.clone());
-        }
-        if let Some(s) = &p.service {
-            parts.push(s.clone());
+        for value in [
+            p.banner.clone(),
+            p.server.clone(),
+            p.title.clone(),
+            p.service.clone(),
+        ] {
+            if let Some(v) = value {
+                parts.push(v);
+            }
         }
     }
     for value in [
@@ -346,7 +407,7 @@ mod tests {
 
     #[test]
     fn embedded_db_is_valid() {
-        let db: Vec<CveEntry> = serde_json::from_str(CVE_DB).unwrap();
+        let db = decode(CVE_DB).unwrap();
         assert!(!db.is_empty());
         for e in &db {
             assert!(!e.id.is_empty());

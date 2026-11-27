@@ -1,65 +1,59 @@
+//! Hand-written argument parser: no clap, no external crates.
+
 use crate::update::{UpdateOpts, CREDS_URL, CVE_URL, MANIFEST_URL};
-use clap::{Args, Parser, Subcommand};
 
-#[derive(Parser, Debug, Clone)]
-#[command(
-    name = "boggy",
-    version,
-    about = "Lightweight agentless IoT network scanner"
-)]
+#[derive(Debug, Clone, Default)]
 pub struct Cli {
-    #[command(subcommand)]
     pub command: Option<Command>,
-
-    #[command(flatten)]
     pub scan: ScanOpts,
 }
 
-#[derive(Args, Debug, Clone)]
+#[derive(Debug, Clone)]
+pub enum Command {
+    UpdateDb {
+        db: DbUpdateArgs,
+    },
+    Update {
+        db: DbUpdateArgs,
+        self_update: bool,
+        check_only: bool,
+        no_db: bool,
+    },
+    UpdateCheck,
+    DbInfo,
+}
+
+#[derive(Debug, Clone)]
 pub struct DbUpdateArgs {
-    /// CVE database destination (default: ~/.boggy/cves.json)
-    #[arg(long)]
     pub out: Option<String>,
-
-    /// CVE database source URL
-    #[arg(long, default_value = CVE_URL)]
     pub url: String,
-
-    /// Credential database source URL
-    #[arg(long, default_value = CREDS_URL)]
     pub creds_url: String,
-
-    /// Credential database destination (default: ~/.boggy/creds.json)
-    #[arg(long)]
     pub creds_out: Option<String>,
-
-    /// Signed manifest URL used for sha256 verification
-    #[arg(long, default_value = MANIFEST_URL)]
     pub manifest_url: String,
-
-    /// Update only the CVE database
-    #[arg(long, default_value_t = false)]
     pub cves_only: bool,
-
-    /// Update only the credential database
-    #[arg(long, default_value_t = false)]
     pub creds_only: bool,
-
-    /// Skip sha256 manifest verification (not recommended)
-    #[arg(long, default_value_t = false)]
     pub no_verify: bool,
-
-    /// Allow plain HTTP downloads
-    #[arg(long, default_value_t = false)]
     pub allow_http: bool,
-
-    /// Override the expected CVE sha256
-    #[arg(long)]
     pub cves_sha256: Option<String>,
-
-    /// Override the expected credential sha256
-    #[arg(long)]
     pub creds_sha256: Option<String>,
+}
+
+impl Default for DbUpdateArgs {
+    fn default() -> Self {
+        Self {
+            out: None,
+            url: CVE_URL.into(),
+            creds_url: CREDS_URL.into(),
+            creds_out: None,
+            manifest_url: MANIFEST_URL.into(),
+            cves_only: false,
+            creds_only: false,
+            no_verify: false,
+            allow_http: false,
+            cves_sha256: None,
+            creds_sha256: None,
+        }
+    }
 }
 
 impl DbUpdateArgs {
@@ -80,120 +74,385 @@ impl DbUpdateArgs {
     }
 }
 
-#[derive(Subcommand, Debug, Clone)]
-pub enum Command {
-    /// Download and verify the latest CVE and credential databases
-    UpdateDb {
-        #[command(flatten)]
-        db: DbUpdateArgs,
-    },
-    /// Check for a release and refresh databases (or self-update)
-    Update {
-        #[command(flatten)]
-        db: DbUpdateArgs,
-        /// Replace the running binary with the verified release asset
-        #[arg(long = "self", default_value_t = false)]
-        self_update: bool,
-        /// Only print the latest release information
-        #[arg(long, default_value_t = false)]
-        check_only: bool,
-        /// Skip the database refresh
-        #[arg(long, default_value_t = false)]
-        no_db: bool,
-    },
-    /// Print the latest release version without changing anything
-    UpdateCheck,
-    /// Show hashes and active locations of the shipped databases
-    DbInfo,
+#[derive(Debug, Clone)]
+pub struct ScanOpts {
+    pub target: Vec<String>,
+    pub auto: bool,
+    pub exclude: Vec<String>,
+    pub deep: bool,
+    pub passive: bool,
+    pub output: String,
+    pub out: Option<String>,
+    pub threads: usize,
+    pub rate_limit: usize,
+    pub timeout: u64,
+    pub fast: bool,
+    pub ports: Option<String>,
+    pub no_creds: bool,
+    pub no_cve: bool,
+    pub cred_limit: usize,
+    pub max_cve: usize,
+    pub min_severity: String,
+    pub fail_on: Option<String>,
+    pub verbose: bool,
+    pub cve_file: Option<String>,
+    pub creds_file: Option<String>,
+    pub max_hosts: usize,
 }
 
-#[derive(Parser, Debug, Clone)]
-pub struct ScanOpts {
-    /// Target CIDR, e.g. 192.168.1.0/24 (repeatable)
-    #[arg(short, long)]
-    pub target: Vec<String>,
+impl Default for ScanOpts {
+    fn default() -> Self {
+        Self {
+            target: Vec::new(),
+            auto: false,
+            exclude: Vec::new(),
+            deep: false,
+            passive: false,
+            output: "text".into(),
+            out: None,
+            threads: 64,
+            rate_limit: 0,
+            timeout: 800,
+            fast: false,
+            ports: None,
+            no_creds: false,
+            no_cve: false,
+            cred_limit: 24,
+            max_cve: 15,
+            min_severity: "info".into(),
+            fail_on: None,
+            verbose: false,
+            cve_file: None,
+            creds_file: None,
+            max_hosts: 65536,
+        }
+    }
+}
 
-    /// Auto-detect local subnet
-    #[arg(long, default_value_t = false)]
-    pub auto: bool,
+#[derive(Debug)]
+pub enum ParseError {
+    Help(String),
+    Version,
+    Message(String),
+}
 
-    /// CIDR to exclude (repeatable)
-    #[arg(long)]
-    pub exclude: Vec<String>,
+const GENERAL_HELP: &str = "\
+Lightweight agentless IoT network scanner
 
-    /// Deep scan: more ports, stronger probes
-    #[arg(long, default_value_t = false)]
-    pub deep: bool,
+Usage: boggy [OPTIONS] [COMMAND]
 
-    /// Passive mode: discovery only, no active probes
-    #[arg(long, default_value_t = false)]
-    pub passive: bool,
+Commands:
+  update-db     Download and verify the latest CVE and credential databases
+  update        Check for a release and refresh databases (or self-update)
+  update-check  Print the latest release version without changing anything
+  db-info       Show hashes and active locations of the shipped databases
+  help          Print this message
 
-    /// Output format: text, json or jsonl
-    #[arg(short, long, default_value = "text")]
-    pub output: String,
+Options:
+  -t, --target <CIDR>       Target network (repeatable)
+      --auto                Auto-detect local /24
+      --exclude <CIDR>      Skip a network (repeatable)
+      --deep                Extended ports and probes
+      --fast                Top ports only
+      --passive             Discovery only, no active probes
+      --ports <SPEC>        22,80,443,8000-8100
+  -o, --output <FORMAT>     text | json | jsonl (default: text)
+      --out <FILE>          Write report to file
+  -j, --threads <N>         Concurrent workers (default: 64)
+      --rate-limit <N>      Max simultaneous sockets (0 = auto)
+      --timeout <MS>        Per-probe timeout (default: 800)
+      --no-creds            Disable credential probes
+      --no-cve              Disable CVE matching
+      --cred-limit <N>      Credential attempts per service (default: 24)
+      --max-cve <N>         CVE findings per host (default: 15)
+      --min-severity <S>    info|low|medium|high|critical
+      --fail-on <S>         Exit 2 when a finding reaches this severity
+      --max-hosts <N>       Refuse larger target expansions (default: 65536)
+      --cve-file <FILE>     Override CVE database
+      --creds-file <FILE>   Override credential database
+  -v, --verbose             Progress on stderr
+  -h, --help                Show help
+  -V, --version             Show version
+";
 
-    /// Output file (stdout if omitted)
-    #[arg(long)]
-    pub out: Option<String>,
+const UPDATE_HELP: &str = "\
+Download and verify the latest databases
 
-    /// Concurrent workers
-    #[arg(short = 'j', long, default_value_t = 64)]
-    pub threads: usize,
+Usage: boggy update-db [OPTIONS]
 
-    /// Max concurrent connections (rate limit). 0 = auto
-    #[arg(long, default_value_t = 0)]
-    pub rate_limit: usize,
+Options:
+      --out <FILE>            CVE database destination
+      --url <URL>             CVE database source
+      --creds-url <URL>       Credential database source
+      --creds-out <FILE>      Credential database destination
+      --manifest-url <URL>    SHA-256 manifest source
+      --cves-only             Only the CVE database
+      --creds-only            Only the credential database
+      --no-verify             Skip SHA-256 verification
+      --allow-http            Permit plain HTTP
+      --cves-sha256 <HEX>     Override expected CVE hash
+      --creds-sha256 <HEX>    Override expected credential hash
+  -h, --help                  Show help
+";
 
-    /// Per-probe timeout in ms
-    #[arg(long, default_value_t = 800)]
-    pub timeout: u64,
+const UPGRADE_HELP: &str = "\
+Check for a release, refresh databases or self-update
 
-    /// Top ports only (fast)
-    #[arg(long, default_value_t = false)]
-    pub fast: bool,
+Usage: boggy update [OPTIONS]
 
-    /// Comma-separated ports/ranges, e.g. 22,80,443,8000-9000
-    #[arg(long)]
-    pub ports: Option<String>,
+Options:
+  [all update-db options]
+      --self          Replace the running binary with the verified release asset
+      --check-only    Only print the latest release information
+      --no-db         Skip the database refresh
+  -h, --help          Show help
+";
 
-    /// Disable credential probing
-    #[arg(long, default_value_t = false)]
-    pub no_creds: bool,
+pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError> {
+    let mut expanded: Vec<String> = Vec::new();
+    for arg in args {
+        if let Some((key, value)) = arg.split_once('=') {
+            if key.starts_with("--") {
+                expanded.push(key.to_string());
+                expanded.push(value.to_string());
+                continue;
+            }
+        }
+        expanded.push(arg);
+    }
 
-    /// Disable CVE matching
-    #[arg(long, default_value_t = false)]
-    pub no_cve: bool,
+    let mut cli = Cli::default();
+    let mut i = 0;
+    while i < expanded.len() {
+        let arg = expanded[i].as_str();
+        match arg {
+            "-h" | "--help" => return Err(ParseError::Help(GENERAL_HELP.into())),
+            "-V" | "--version" => return Err(ParseError::Version),
+            "help" => return Err(ParseError::Help(GENERAL_HELP.into())),
+            "update-db" => {
+                cli.command = Some(Command::UpdateDb {
+                    db: parse_db_args(&expanded, &mut i)?,
+                });
+                break;
+            }
+            "update" => {
+                let db = parse_db_args(&expanded, &mut i)?;
+                let mut self_update = false;
+                let mut check_only = false;
+                let mut no_db = false;
+                while i < expanded.len() {
+                    match expanded[i].as_str() {
+                        "--self" => self_update = true,
+                        "--check-only" => check_only = true,
+                        "--no-db" => no_db = true,
+                        "-h" | "--help" => return Err(ParseError::Help(UPGRADE_HELP.into())),
+                        other => {
+                            return Err(ParseError::Message(format!(
+                                "unknown update option: {}",
+                                other
+                            )))
+                        }
+                    }
+                    i += 1;
+                }
+                cli.command = Some(Command::Update {
+                    db,
+                    self_update,
+                    check_only,
+                    no_db,
+                });
+                break;
+            }
+            "update-check" => {
+                cli.command = Some(Command::UpdateCheck);
+                break;
+            }
+            "db-info" => {
+                cli.command = Some(Command::DbInfo);
+                break;
+            }
+            "-t" | "--target" => {
+                cli.scan.target.push(value(&expanded, &mut i, arg)?);
+            }
+            "--exclude" => cli.scan.exclude.push(value(&expanded, &mut i, arg)?),
+            "--auto" => cli.scan.auto = true,
+            "--deep" => cli.scan.deep = true,
+            "--fast" => cli.scan.fast = true,
+            "--passive" => cli.scan.passive = true,
+            "--no-creds" => cli.scan.no_creds = true,
+            "--no-cve" => cli.scan.no_cve = true,
+            "-v" | "--verbose" => cli.scan.verbose = true,
+            "-o" | "--output" => cli.scan.output = value(&expanded, &mut i, arg)?,
+            "--out" => cli.scan.out = Some(value(&expanded, &mut i, arg)?),
+            "-j" | "--threads" => {
+                cli.scan.threads = value(&expanded, &mut i, arg)?
+                    .parse()
+                    .map_err(|_| ParseError::Message(format!("invalid number for {}", arg)))?;
+            }
+            "--rate-limit" => {
+                cli.scan.rate_limit = value(&expanded, &mut i, arg)?
+                    .parse()
+                    .map_err(|_| ParseError::Message(format!("invalid number for {}", arg)))?;
+            }
+            "--timeout" => {
+                cli.scan.timeout = value(&expanded, &mut i, arg)?
+                    .parse()
+                    .map_err(|_| ParseError::Message(format!("invalid number for {}", arg)))?;
+            }
+            "--cred-limit" => {
+                cli.scan.cred_limit = value(&expanded, &mut i, arg)?
+                    .parse()
+                    .map_err(|_| ParseError::Message(format!("invalid number for {}", arg)))?;
+            }
+            "--max-cve" => {
+                cli.scan.max_cve = value(&expanded, &mut i, arg)?
+                    .parse()
+                    .map_err(|_| ParseError::Message(format!("invalid number for {}", arg)))?;
+            }
+            "--max-hosts" => {
+                cli.scan.max_hosts = value(&expanded, &mut i, arg)?
+                    .parse()
+                    .map_err(|_| ParseError::Message(format!("invalid number for {}", arg)))?;
+            }
+            "--min-severity" => cli.scan.min_severity = value(&expanded, &mut i, arg)?,
+            "--fail-on" => cli.scan.fail_on = Some(value(&expanded, &mut i, arg)?),
+            "--ports" => cli.scan.ports = Some(value(&expanded, &mut i, arg)?),
+            "--cve-file" => cli.scan.cve_file = Some(value(&expanded, &mut i, arg)?),
+            "--creds-file" => cli.scan.creds_file = Some(value(&expanded, &mut i, arg)?),
+            other => {
+                return Err(ParseError::Message(format!(
+                    "unknown option: {} (try --help)",
+                    other
+                )))
+            }
+        }
+        i += 1;
+    }
+    Ok(cli)
+}
 
-    /// Max credential attempts per service (0 = no limit)
-    #[arg(long, default_value_t = 24)]
-    pub cred_limit: usize,
+fn value(args: &[String], i: &mut usize, name: &str) -> Result<String, ParseError> {
+    *i += 1;
+    args.get(*i)
+        .cloned()
+        .ok_or_else(|| ParseError::Message(format!("{} requires a value", name)))
+}
 
-    /// Max CVE findings reported per host (0 = no limit)
-    #[arg(long, default_value_t = 15)]
-    pub max_cve: usize,
+fn parse_db_args(args: &[String], i: &mut usize) -> Result<DbUpdateArgs, ParseError> {
+    let mut db = DbUpdateArgs::default();
+    let mut j = *i + 1; // skip the subcommand token
+    while j < args.len() {
+        let arg = args[j].as_str();
+        match arg {
+            "--out" => db.out = Some(take(args, &mut j, arg)?),
+            "--url" => db.url = take(args, &mut j, arg)?,
+            "--creds-url" => db.creds_url = take(args, &mut j, arg)?,
+            "--creds-out" => db.creds_out = Some(take(args, &mut j, arg)?),
+            "--manifest-url" => db.manifest_url = take(args, &mut j, arg)?,
+            "--cves-sha256" => db.cves_sha256 = Some(take(args, &mut j, arg)?),
+            "--creds-sha256" => db.creds_sha256 = Some(take(args, &mut j, arg)?),
+            "--cves-only" => db.cves_only = true,
+            "--creds-only" => db.creds_only = true,
+            "--no-verify" => db.no_verify = true,
+            "--allow-http" => db.allow_http = true,
+            "-h" | "--help" => {
+                *i = j;
+                return Err(ParseError::Help(UPDATE_HELP.into()));
+            }
+            _ => break,
+        }
+        j += 1;
+    }
+    *i = j;
+    Ok(db)
+}
 
-    /// Hide findings below this severity: info|low|medium|high|critical
-    #[arg(long, default_value = "info")]
-    pub min_severity: String,
+fn take(args: &[String], i: &mut usize, name: &str) -> Result<String, ParseError> {
+    *i += 1;
+    args.get(*i)
+        .cloned()
+        .ok_or_else(|| ParseError::Message(format!("{} requires a value", name)))
+}
 
-    /// Exit with code 2 when a finding at or above this severity exists
-    #[arg(long)]
-    pub fail_on: Option<String>,
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    /// Print progress to stderr
-    #[arg(long, short, default_value_t = false)]
-    pub verbose: bool,
+    fn args(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
 
-    /// Use a custom CVE database file
-    #[arg(long)]
-    pub cve_file: Option<String>,
+    #[test]
+    fn defaults() {
+        let cli = parse(args(&[])).unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.scan.threads, 64);
+        assert_eq!(cli.scan.max_hosts, 65536);
+    }
 
-    /// Use a custom credential database file
-    #[arg(long)]
-    pub creds_file: Option<String>,
+    #[test]
+    fn scan_flags() {
+        let cli = parse(args(&[
+            "--target",
+            "10.0.0.0/24",
+            "--target",
+            "10.0.1.0/24",
+            "--fast",
+            "-j",
+            "4",
+            "--min-severity",
+            "high",
+            "--fail-on",
+            "critical",
+            "--ports",
+            "22,80,443",
+        ]))
+        .unwrap();
+        assert_eq!(cli.scan.target.len(), 2);
+        assert!(cli.scan.fast);
+        assert_eq!(cli.scan.threads, 4);
+        assert_eq!(cli.scan.fail_on.as_deref(), Some("critical"));
+        assert_eq!(cli.scan.ports.as_deref(), Some("22,80,443"));
+    }
 
-    /// Refuse targets with more addresses than this (0 = unlimited)
-    #[arg(long, default_value_t = 65536)]
-    pub max_hosts: usize,
+    #[test]
+    fn update_db_flags() {
+        let cli = parse(args(&[
+            "update-db",
+            "--cves-only",
+            "--url=file:///tmp/c.json",
+            "--creds-sha256",
+            "abc",
+            "--no-verify",
+        ]))
+        .unwrap();
+        match cli.command.unwrap() {
+            Command::UpdateDb { db } => {
+                assert!(db.cves_only);
+                assert!(db.no_verify);
+                assert_eq!(db.url, "file:///tmp/c.json");
+                assert_eq!(db.creds_sha256.as_deref(), Some("abc"));
+            }
+            _ => panic!("wrong command"),
+        }
+    }
+
+    #[test]
+    fn self_update_flags() {
+        let cli = parse(args(&["update", "--self", "--no-db"])).unwrap();
+        match cli.command.unwrap() {
+            Command::Update {
+                self_update, no_db, ..
+            } => assert!(self_update && no_db),
+            _ => panic!("wrong command"),
+        }
+    }
+
+    #[test]
+    fn errors_and_help() {
+        assert!(parse(args(&["--bogus"])).is_err());
+        assert!(matches!(parse(args(&["--help"])), Err(ParseError::Help(_))));
+        assert!(matches!(parse(args(&["-V"])), Err(ParseError::Version)));
+        assert!(parse(args(&["--timeout"])).is_err());
+    }
 }
