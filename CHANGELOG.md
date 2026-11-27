@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.1
+
+- Fixed: liveness probe now includes custom ports, so non-standard IoT devices are no longer skipped.
+- Fixed: plaintext credential probes skip TLS ports; UDP CoAP is always probed.
+- Fixed: Telnet and FTP retry on a fresh connection after a failed login.
+- Fixed: web-form success requires a real success marker, not just a session cookie; form parsing is bounded to the form.
+- Fixed: deterministic finding de-duplication by id + detail; report files written atomically.
+- Fixed: `--threads * 2` overflow, invalid `--output`/severity values, trailing subcommand arguments and `--fast` + `--deep`.
+- Fixed: safe subnet enumeration for `/0`, divisor overflow gone; local database overrides are validated before use.
+- Security: CRLF injection blocked in HTTP requests, chunked decoding, HTTP Digest MD5-sess, per-host semaphore, unique temp files, ELF architecture check.
+- `db-info` now flags local overrides that differ from the manifest; 46 unit and 11 end-to-end tests, 15 in-binary checks.
+
 ## 0.6.0
 
 - `boggy update` now updates **source code from GitHub** via git (fetch/reset or clone),

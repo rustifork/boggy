@@ -60,6 +60,18 @@ fn db_info_lists_three_databases() {
 }
 
 #[test]
+fn db_info_flags_divergent_override() {
+    let home = tmp("home");
+    let override_dir = home.join(".boggy");
+    fs::create_dir_all(&override_dir).unwrap();
+    fs::write(override_dir.join("cves.json"), b"[]").unwrap();
+    let out = run(bin().arg("db-info").env("HOME", &home));
+    let text = ok(&out);
+    assert!(text.contains("cves.json:"), "{}", text);
+    assert!(text.contains("DIFFERS"), "{}", text);
+}
+
+#[test]
 fn dry_run_does_not_write() {
     let dir = tmp("dry-run");
     let dest = dir.join("cves.json");
@@ -160,6 +172,17 @@ fn invalid_inputs_fail_closed() {
     let huge = run(bin().args(["--target", "10.0.0.0/8", "--max-hosts", "10", "--passive"]));
     assert!(!huge.status.success());
     assert!(String::from_utf8_lossy(&huge.stderr).contains("limit 10"));
+}
+
+#[test]
+fn invalid_values_fail_in_binary() {
+    for flag in ["--min-severity", "--fail-on", "--output"] {
+        let out = run(bin().args([flag, "not-a-value"]));
+        assert!(!out.status.success(), "{} was accepted", flag);
+    }
+    let extra = run(bin().args(["selftest", "unexpected"]));
+    assert!(!extra.status.success());
+    assert!(String::from_utf8_lossy(&extra.stderr).contains("unexpected argument"));
 }
 
 #[test]

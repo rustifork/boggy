@@ -61,12 +61,23 @@ pub fn request(
     let line = format!("{} {} HTTP/1.0", req.method, req.path);
     let mut headers = Vec::with_capacity(req.headers.len() + 1);
     headers.push(("Host".to_string(), format!("{}:{}", ip, port)));
-    headers.push(("User-Agent".to_string(), "boggy/0.3".to_string()));
+    headers.push((
+        "User-Agent".to_string(),
+        format!("boggy/{}", env!("CARGO_PKG_VERSION")),
+    ));
     headers.extend(req.headers.iter().cloned());
     raw_request(ip, port, &line, &headers, &req.body, timeout_ms)
 }
 
 /// Send a request with a caller-supplied request line (used for RTSP/1.0).
+/// Reject CR/LF and NUL so a value taken from a scanned page cannot inject
+/// extra request lines or headers into the client.
+fn safe_field(value: &str, max: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max
+        && !value.bytes().any(|b| matches!(b, b'\r' | b'\n' | 0))
+}
+
 pub fn raw_request(
     ip: Ipv4Addr,
     port: u16,
@@ -75,6 +86,13 @@ pub fn raw_request(
     body: &[u8],
     timeout_ms: u64,
 ) -> Option<HttpResponse> {
+    if !safe_field(request_line, 2048)
+        || headers
+            .iter()
+            .any(|(k, v)| !safe_field(k, 128) || !safe_field(v, 4096))
+    {
+        return None;
+    }
     let addr = SocketAddr::new(std::net::IpAddr::V4(ip), port);
     let to = Duration::from_millis(timeout_ms.max(50));
     let mut stream = TcpStream::connect_timeout(&addr, to).ok()?;
@@ -124,11 +142,48 @@ fn parse_response(data: &[u8]) -> Option<HttpResponse> {
             headers.push((k.trim().to_string(), v.trim().to_string()));
         }
     }
+    let raw_body = &data[sep + 4..];
+    let chunked = headers.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("transfer-encoding") && v.to_ascii_lowercase().contains("chunked")
+    });
+    let body = if chunked {
+        dechunk(raw_body)
+    } else {
+        raw_body.to_vec()
+    };
     Some(HttpResponse {
         status,
         headers,
-        body: data[sep + 4..].to_vec(),
+        body,
     })
+}
+
+/// Decode an HTTP/1.1 chunked body, bounded by the response limit.
+fn dechunk(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while pos < data.len() {
+        let line_end = match data[pos..].windows(2).position(|w| w == b"\r\n") {
+            Some(i) => pos + i,
+            None => break,
+        };
+        let size_text = String::from_utf8_lossy(&data[pos..line_end]);
+        let size = match usize::from_str_radix(size_text.split(';').next().unwrap_or("").trim(), 16)
+        {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        pos = line_end + 2;
+        if size == 0 {
+            break;
+        }
+        if pos + size > data.len() || out.len() + size > MAX_RESPONSE {
+            break;
+        }
+        out.extend_from_slice(&data[pos..pos + size]);
+        pos += size + 2; // trailing CRLF after the chunk
+    }
+    out
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -265,7 +320,14 @@ pub fn digest_header(
     uri: &str,
     challenge: &DigestChallenge,
 ) -> String {
-    let ha1 = md5::hex(format!("{}:{}:{}", user, challenge.realm, pass).as_bytes());
+    let nc = "00000001";
+    let cnonce = "0b0g9y";
+    let base = md5::hex(format!("{}:{}:{}", user, challenge.realm, pass).as_bytes());
+    let ha1 = if challenge.algorithm.eq_ignore_ascii_case("MD5-sess") {
+        md5::hex(format!("{}:{}:{}", base, challenge.nonce, cnonce).as_bytes())
+    } else {
+        base
+    };
     let ha2 = md5::hex(format!("{}:{}", method, uri).as_bytes());
     let use_qop = challenge
         .qop
@@ -273,8 +335,6 @@ pub fn digest_header(
         .map(|q| q.split(',').any(|x| x.trim() == "auth"))
         .unwrap_or(false);
     let qop = if use_qop { "auth" } else { "" };
-    let nc = "00000001";
-    let cnonce = "0b0g9y";
     let response = if use_qop {
         md5::hex(
             format!(
@@ -335,6 +395,24 @@ mod tests {
         let header = digest_header("admin", "12345", "GET", "/", &challenge);
         assert!(header.contains("qop=auth"));
         assert!(header.contains("response=\""));
+    }
+
+    #[test]
+    fn rejects_header_injection() {
+        let req = crate::net::http::HttpRequest {
+            method: "GET",
+            path: "/ HTTP/1.1\r\nX-Injected: yes",
+            headers: Vec::new(),
+            body: Vec::new(),
+        };
+        assert!(request("127.0.0.1".parse().unwrap(), 1, &req, 10).is_none());
+    }
+
+    #[test]
+    fn decodes_chunked_body() {
+        let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
+        let r = parse_response(raw).unwrap();
+        assert_eq!(r.body_text(), "hello world");
     }
 
     #[test]

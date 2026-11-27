@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 pub const CVE_URL: &str = "https://raw.githubusercontent.com/rustifork/boggy/main/db/cves.json";
 pub const CREDS_URL: &str = "https://raw.githubusercontent.com/rustifork/boggy/main/db/creds.json";
@@ -413,7 +414,18 @@ pub fn atomic_write(path: &Path, bytes: &[u8], executable: bool) -> Result<(), S
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or("destination has no file name")?;
-    let tmp: PathBuf = parent.join(format!(".{}.tmp.{}", name, std::process::id()));
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let tmp: PathBuf = parent.join(format!(
+        ".{}.tmp.{}.{}.{}",
+        name,
+        std::process::id(),
+        nanos,
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
 
     let cleanup = |e: String| -> String {
         let _ = fs::remove_file(&tmp);
@@ -815,6 +827,28 @@ fn checksums_asset(release: &Release, name: &str, allow_http: bool) -> Result<St
     Err(format!("no checksum line for {} in SHA256SUMS", name))
 }
 
+/// Verify an ELF image before it can replace the running binary. Checks the
+/// architecture field so a release asset for another platform is never installed.
+pub fn verify_elf(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() < 20 || !bytes.starts_with(&[0x7f, b'E', b'L', b'F']) {
+        return Err("downloaded asset is not an ELF binary".into());
+    }
+    let machine = u16::from_le_bytes([bytes[18], bytes[19]]);
+    let expected: u16 = match std::env::consts::ARCH {
+        "x86_64" => 62,
+        "aarch64" => 183,
+        "arm" => 40,
+        other => return Err(format!("unsupported architecture {}", other)),
+    };
+    if machine != expected {
+        return Err(format!(
+            "ELF architecture {} does not match this host ({})",
+            machine, expected
+        ));
+    }
+    Ok(())
+}
+
 pub fn self_update(allow_http: bool) -> Result<String, String> {
     let name = asset_name();
     if name.is_empty() {
@@ -834,9 +868,7 @@ pub fn self_update(allow_http: bool) -> Result<String, String> {
         return Err(format!("asset {} is too large: {} bytes", name, asset.size));
     }
     let bytes = fetch_asset(&asset.browser_download_url, MAX_BINARY_BYTES, allow_http)?;
-    if !bytes.starts_with(&[0x7f, b'E', b'L', b'F']) {
-        return Err("downloaded asset is not an ELF binary".into());
-    }
+    verify_elf(&bytes)?;
     let expected = match digest_hex(&asset.digest) {
         Some(hash) => hash,
         None => checksums_asset(&release, name, allow_http)?,
@@ -858,27 +890,48 @@ pub fn self_update(allow_http: bool) -> Result<String, String> {
 }
 
 pub fn db_info() -> Result<String, String> {
+    let manifest_bytes = include_bytes!("../db/manifest.json");
+    let manifest = parse_manifest(manifest_bytes)?;
+    let manifest_hash = sha256::hex(manifest_bytes);
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     let mut lines = Vec::new();
-    for (name, embedded) in [
-        ("cves.json", include_str!("../db/cves.json")),
-        ("creds.json", include_str!("../db/creds.json")),
-        ("manifest.json", include_str!("../db/manifest.json")),
+    for (name, expected, embedded) in [
+        (
+            "cves.json",
+            manifest.cves.sha256.as_str(),
+            include_bytes!("../db/cves.json").as_slice(),
+        ),
+        (
+            "creds.json",
+            manifest.creds.sha256.as_str(),
+            include_bytes!("../db/creds.json").as_slice(),
+        ),
+        (
+            "manifest.json",
+            manifest_hash.as_str(),
+            manifest_bytes.as_slice(),
+        ),
     ] {
-        let bytes = embedded.as_bytes();
         let local = format!("{}/.boggy/{}", home, name);
-        let active = if Path::new(&local).exists() {
-            format!("local override {}", local)
-        } else {
-            "embedded".to_string()
+        let embedded_hash = sha256::hex(embedded);
+        let active = match std::fs::read(&local) {
+            Ok(bytes) => {
+                let hash = sha256::hex(&bytes);
+                if hash == expected {
+                    format!(
+                        "local override {} (sha256 {}, matches manifest)",
+                        local, hash
+                    )
+                } else {
+                    format!(
+                        "local override {} (sha256 {}, DIFFERS from manifest {})",
+                        local, hash, expected
+                    )
+                }
+            }
+            Err(_) => format!("embedded (sha256 {})", embedded_hash),
         };
-        lines.push(format!(
-            "{}: sha256 {} ({} bytes), {}",
-            name,
-            sha256::hex(bytes),
-            bytes.len(),
-            active
-        ));
+        lines.push(format!("{}: {}", name, active));
     }
     Ok(lines.join("\n"))
 }
@@ -929,6 +982,21 @@ mod tests {
     fn version_comparison() {
         assert!(is_newer("v0.3.0", "0.2.1"));
         assert!(!is_newer("0.2.0", "0.2.1"));
+    }
+
+    #[test]
+    fn elf_verification() {
+        let mut good = vec![0u8; 20];
+        good[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        let machine: u16 = match std::env::consts::ARCH {
+            "x86_64" => 62,
+            "aarch64" => 183,
+            "arm" => 40,
+            _ => 0,
+        };
+        good[18..20].copy_from_slice(&machine.to_le_bytes());
+        assert!(verify_elf(&good).is_ok());
+        assert!(verify_elf(b"not elf").is_err());
     }
 
     #[test]

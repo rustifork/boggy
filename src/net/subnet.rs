@@ -42,19 +42,25 @@ impl Subnet {
     }
 
     /// Enumerate usable addresses. /31 and /32 are treated as single-host routes.
+    /// Hard-capped so a direct call cannot allocate an unbounded vector; callers
+    /// should check `host_count()` first for large CIDRs.
     pub fn hosts(&self) -> Vec<Ipv4Addr> {
-        let count = match self.prefix {
-            32 => 1u32,
-            31 => 2u32,
-            _ => 1u32 << (32 - self.prefix),
-        };
+        const MAX_ENUMERATED: usize = 1 << 20;
+        let count = self.host_count();
+        if count == 0 || count > MAX_ENUMERATED {
+            return Vec::new();
+        }
+        let base = u32::from(self.network) as u64;
+        let count = count as u64;
+        // host_count() excludes network/broadcast for <= /30; add them back to
+        // reconstruct the address range before skipping the first and last.
         let (start, end) = if self.prefix <= 30 {
-            (1u32, count.saturating_sub(1))
+            (1u64, count + 1)
         } else {
-            (0u32, count)
+            (0u64, count)
         };
         (start..end)
-            .map(|i| Ipv4Addr::from(u32::from(self.network) + i))
+            .map(|i| Ipv4Addr::from((base + i) as u32))
             .collect()
     }
 
@@ -103,9 +109,6 @@ mod tests {
             Subnet::parse("10.0.0.0/8").unwrap().host_count(),
             16_777_214
         );
-        assert_eq!(
-            Subnet::parse("10.0.0.0/8").unwrap().host_count(),
-            Subnet::parse("10.0.0.0/8").unwrap().hosts().len()
-        );
+        assert!(Subnet::parse("10.0.0.0/0").unwrap().hosts().is_empty());
     }
 }

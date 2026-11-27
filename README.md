@@ -27,7 +27,7 @@
 | Probes | HTTP Basic/Digest/forms, Telnet, FTP, MQTT, CoAP, SNMP, Redis, Modbus, Docker, ADB… |
 | Reports | text, JSON, JSONL, severity summary, CI exit codes |
 | Updates | `update` = source code (git), `update-db` = data, `self-update` = binary |
-| Tests | 41 unit + 9 end-to-end |
+| Tests | 46 unit + 11 end-to-end |
 
 **Contents:** [Quick start](#quick-start) · [Commands](#commands) · [Security](#security) · [Architecture](#architecture) · [Testing](#testing) · [Troubleshooting](#troubleshooting)
 
@@ -133,7 +133,7 @@ boggy update-db --dry-run             # validate and print, write nothing
 boggy update-check                    # release version only
 boggy db-info                         # embedded hashes and active overrides
 boggy self-update                     # verified release binary
-boggy selftest                        # 13 integrity/parser checks
+boggy selftest                        # 15 integrity/parser checks
 ```
 
 ---
@@ -145,6 +145,9 @@ boggy selftest                        # 13 integrity/parser checks
 - SHA-256 digests from `db/manifest.json` (or the release `digest` / `SHA256SUMS`) are compared in constant time before any file is written.
 - Files are replaced atomically: create-new temp file, `fsync`, rename. Databases are 0600, binaries 0755, symlinks never followed.
 - The in-tree JSON parser enforces depth, node, string and UTF-8 limits. A malformed database never panics.
+- HTTP request lines and headers are CRLF-sanitized; chunked responses are decoded.
+- Replaced binaries are checked for the host architecture; source and report files use atomic writes.
+- Local database overrides are structurally validated before use; CLI rejects invalid severity, format and conflicting flags.
 - Git arguments are passed as an array, branch names and URLs are validated, and local changes cannot be silently discarded.
 
 **Out of scope:** TLS inspection, active exploitation, authenticated version confirmation, zero-day discovery. A CVE match means "this device looks affected" — confirm with the vendor advisory.
@@ -175,7 +178,7 @@ Everything lives in `src/`: `net` (discovery, ports, HTTP, MD5, SHA-256), `iot` 
 ## Testing
 
 ```sh
-cargo test                 # 41 unit + 9 end-to-end checks
+cargo test                 # 46 unit + 11 end-to-end checks
 cargo run -- selftest      # runs inside the binary, no cargo needed on target
 cargo fmt --check
 ```
@@ -196,6 +199,7 @@ CI checks zero dependencies, formatting, clippy, database hashes, all tests, the
 | `working tree has local changes` | Commit them or pass `--force` |
 | `target expands to N hosts` | Narrow `--target` or raise `--max-hosts` |
 | No CVE findings | Try `--deep`; banners must expose a vendor; lower `--min-severity` |
+| `--fast and --deep are mutually exclusive` | Pick one port profile |
 
 ---
 

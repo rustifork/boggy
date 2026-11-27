@@ -225,6 +225,50 @@ Options:
   -h, --help               Show help
 ";
 
+fn valid_severity(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "info" | "low" | "medium" | "high" | "critical"
+    )
+}
+
+fn validate_scan(scan: &ScanOpts) -> Result<(), ParseError> {
+    if scan.fast && scan.deep {
+        return Err(ParseError::Message(
+            "--fast and --deep are mutually exclusive".into(),
+        ));
+    }
+    if !valid_severity(&scan.min_severity) {
+        return Err(ParseError::Message(format!(
+            "invalid --min-severity: {}",
+            scan.min_severity
+        )));
+    }
+    if let Some(value) = &scan.fail_on {
+        if !valid_severity(value) {
+            return Err(ParseError::Message(format!("invalid --fail-on: {}", value)));
+        }
+    }
+    if !matches!(scan.output.as_str(), "text" | "json" | "jsonl") {
+        return Err(ParseError::Message(format!(
+            "invalid --output: {} (expected text, json or jsonl)",
+            scan.output
+        )));
+    }
+    Ok(())
+}
+
+fn finish(cli: Cli, args: &[String], pos: usize) -> Result<Cli, ParseError> {
+    if pos < args.len() {
+        return Err(ParseError::Message(format!(
+            "unexpected argument: {}",
+            args[pos]
+        )));
+    }
+    validate_scan(&cli.scan)?;
+    Ok(cli)
+}
+
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError> {
     let mut expanded: Vec<String> = Vec::new();
     for arg in args {
@@ -250,7 +294,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
                 cli.command = Some(Command::UpdateDb {
                     db: parse_db_args(&expanded, &mut i)?,
                 });
-                break;
+                return finish(cli, &expanded, i);
             }
             "update" => {
                 let mut src = SourceOpts::default();
@@ -288,7 +332,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
                     self_update,
                     check_only,
                 });
-                break;
+                return finish(cli, &expanded, i);
             }
             "self-update" => {
                 let mut allow_http = false;
@@ -309,19 +353,19 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
                     i += 1;
                 }
                 cli.command = Some(Command::SelfUpdate { allow_http });
-                break;
+                return finish(cli, &expanded, i);
             }
             "update-check" => {
                 cli.command = Some(Command::UpdateCheck);
-                break;
+                return finish(cli, &expanded, i + 1);
             }
             "db-info" => {
                 cli.command = Some(Command::DbInfo);
-                break;
+                return finish(cli, &expanded, i + 1);
             }
             "selftest" => {
                 cli.command = Some(Command::SelfTest);
-                break;
+                return finish(cli, &expanded, i + 1);
             }
             "-t" | "--target" => {
                 cli.scan.target.push(value(&expanded, &mut i, arg)?);
@@ -380,6 +424,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
         }
         i += 1;
     }
+    validate_scan(&cli.scan)?;
     Ok(cli)
 }
 
@@ -516,6 +561,17 @@ mod tests {
             Command::UpdateDb { db } => assert!(db.dry_run),
             _ => panic!("wrong command"),
         }
+    }
+
+    #[test]
+    fn validates_values_and_trailing_args() {
+        assert!(parse(args(&["--min-severity", "bogus"])).is_err());
+        assert!(parse(args(&["--fail-on", "nope"])).is_err());
+        assert!(parse(args(&["--output", "xml"])).is_err());
+        assert!(parse(args(&["update-db", "--cves-only", "extra"])).is_err());
+        assert!(parse(args(&["selftest", "extra"])).is_err());
+        assert!(parse(args(&["--min-severity", "HIGH"])).is_ok());
+        assert!(parse(args(&["--fast", "--deep"])).is_err());
     }
 
     #[test]

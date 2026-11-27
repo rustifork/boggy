@@ -115,9 +115,11 @@ fn load(explicit: Option<&str>) -> Vec<CveEntry> {
     candidates.push("/etc/boggy/cves.json".to_string());
     for path in &candidates {
         if let Ok(data) = std::fs::read_to_string(path) {
-            if let Some(db) = decode(&data) {
-                if !db.is_empty() {
-                    return db;
+            if crate::update::validate_cves(data.as_bytes()).is_ok() {
+                if let Some(db) = decode(&data) {
+                    if !db.is_empty() {
+                        return db;
+                    }
                 }
             }
         }

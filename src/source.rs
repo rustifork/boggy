@@ -127,9 +127,7 @@ fn build(dir: &Path) -> Result<String, String> {
 
 fn install(binary: &str, dest: &str) -> Result<String, String> {
     let bytes = std::fs::read(binary).map_err(|e| format!("read {}: {}", binary, e))?;
-    if !bytes.starts_with(&[0x7f, b'E', b'L', b'F']) {
-        return Err(format!("{} is not an ELF binary", binary));
-    }
+    crate::update::verify_elf(&bytes)?;
     atomic_write(Path::new(dest), &bytes, true)?;
     Ok(dest.to_string())
 }
@@ -174,7 +172,7 @@ pub fn update(opts: &SourceOpts) -> Result<String, String> {
         if old == new {
             lines.push(format!("already at {}", &new[..new.len().min(12)]));
             if opts.force && !status.is_empty() && !opts.dry_run {
-                git(&["reset", "--hard", &new], Some(&dir))?;
+                git(&["checkout", "-f", "-B", &opts.branch, &new], Some(&dir))?;
                 lines.push("local changes discarded".into());
             }
         } else {
@@ -184,7 +182,7 @@ pub fn update(opts: &SourceOpts) -> Result<String, String> {
                 &new[..new.len().min(12)]
             ));
             if !opts.dry_run {
-                git(&["reset", "--hard", &new], Some(&dir))?;
+                git(&["checkout", "-B", &opts.branch, &new], Some(&dir))?;
             }
         }
     } else {

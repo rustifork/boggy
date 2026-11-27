@@ -134,6 +134,28 @@ pub fn run() -> Result<String, String> {
         "JSON roundtrip of an empty report",
     ));
 
+    let injection_ok = crate::net::http::request(
+        "127.0.0.1".parse().unwrap(),
+        1,
+        &crate::net::http::HttpRequest {
+            method: "GET",
+            path: "/ HTTP/1.1\r\nX-Injected: yes",
+            headers: Vec::new(),
+            body: Vec::new(),
+        },
+        10,
+    )
+    .is_none();
+    checks.push(check(
+        "header injection blocked",
+        injection_ok,
+        "CRLF in request line refused",
+    ));
+
+    let cli_invalid =
+        crate::cli::parse(["--min-severity", "bogus"].iter().map(|s| s.to_string())).is_err();
+    checks.push(check("cli validation", cli_invalid, "bad severity refused"));
+
     let mut out = String::new();
     out.push_str("boggy selftest\n");
     let mut failures = 0;

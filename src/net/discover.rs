@@ -16,9 +16,11 @@ pub struct SsdpEntry {
     pub search_target: Option<String>,
 }
 
-pub fn tcp_alive(ip: Ipv4Addr, timeout_ms: u64) -> bool {
+/// Liveness probing over an explicit port set, so devices that only expose a
+/// custom port are not dropped before the real scan starts.
+pub fn tcp_alive_ports(ip: Ipv4Addr, timeout_ms: u64, ports: &[u16]) -> bool {
     let to = Duration::from_millis(timeout_ms.min(500).max(50));
-    for port in [80u16, 443, 22, 23, 445, 554, 8080, 8000, 8443, 1883] {
+    for &port in ports {
         let addr = SocketAddr::new(IpAddr::V4(ip), port);
         if TcpStream::connect_timeout(&addr, to).is_ok() {
             return true;

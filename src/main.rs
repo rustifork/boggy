@@ -77,8 +77,16 @@ fn scan_host(
     if passive && !discovered {
         return None;
     }
-    if !discovered && !passive && !discover::tcp_alive(ip, opts.timeout) {
-        return None;
+    if !discovered && !passive {
+        let mut probes: Vec<u16> = vec![80, 443, 22, 23, 445, 554, 8080, 8000, 8443, 1883];
+        if let Some(custom) = custom_ports {
+            probes.extend(custom.iter().take(16));
+        }
+        probes.sort_unstable();
+        probes.dedup();
+        if !discover::tcp_alive_ports(ip, opts.timeout, &probes) {
+            return None;
+        }
     }
 
     let mut port_results: Vec<PortResult> = Vec::new();
@@ -192,7 +200,7 @@ fn scan_host(
             let service = pr.service.as_deref().unwrap_or("");
             let vendor_name = vendor.as_deref().unwrap_or("");
 
-            if (service == "http" || service == "https") && !opts.no_creds {
+            if (service == "http" || service == "https") && !opts.no_creds && !pr.tls {
                 sem.acquire();
                 let found = dc::http_default_creds(
                     ip,
@@ -289,11 +297,8 @@ fn scan_host(
                 break;
             }
         }
-        let coap_udp_open = port_results.iter().any(|p| p.port == 5683);
-        if !coap_udp_open {
-            if let Some(f) = protocols::coap_probe(ip, 5683, opts.timeout) {
-                findings.push(f);
-            }
+        if let Some(f) = protocols::coap_probe(ip, 5683, opts.timeout) {
+            findings.push(f);
         }
         sem.release();
 
@@ -324,9 +329,20 @@ fn scan_host(
     }
 
     // Dedup by id, keep the most severe version of each finding.
-    let mut seen: HashSet<String> = HashSet::new();
-    findings.sort_by(|a, b| b.rank().cmp(&a.rank()));
-    findings.retain(|f| seen.insert(f.id.clone()));
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    findings.sort_by(|a, b| {
+        b.rank()
+            .cmp(&a.rank())
+            .then_with(|| {
+                b.cvss
+                    .unwrap_or(0.0)
+                    .partial_cmp(&a.cvss.unwrap_or(0.0))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.id.cmp(&b.id))
+            .then_with(|| a.detail.cmp(&b.detail))
+    });
+    findings.retain(|f| seen.insert((f.id.clone(), f.detail.clone())));
     let min = Severity::parse(&opts.min_severity);
     findings.retain(|f| f.rank() >= min);
     // The CVE cap applies to CVE-shaped ids only; weak-config findings stay visible.
@@ -353,6 +369,14 @@ fn scan_host(
         device_type,
         findings,
     })
+}
+
+/// Device banners can contain control characters that would corrupt a text report.
+fn clean(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
 }
 
 fn render_text(r: &ScanReport) -> String {
@@ -389,19 +413,19 @@ fn render_text(r: &ScanReport) -> String {
     for h in &r.hosts {
         out.push_str(&format!("== {} ==\n", h.ip));
         if let Some(hn) = &h.hostname {
-            out.push_str(&format!("  hostname: {}\n", hn));
+            out.push_str(&format!("  hostname: {}\n", clean(hn)));
         }
         if let Some(m) = &h.mac {
             out.push_str(&format!("  mac: {}\n", m));
         }
         if let Some(v) = &h.vendor {
-            out.push_str(&format!("  vendor: {}\n", v));
+            out.push_str(&format!("  vendor: {}\n", clean(v)));
         }
         if let Some(m) = &h.model {
-            out.push_str(&format!("  model: {}\n", m));
+            out.push_str(&format!("  model: {}\n", clean(m)));
         }
         if let Some(d) = &h.device_type {
-            out.push_str(&format!("  type: {}\n", d));
+            out.push_str(&format!("  type: {}\n", clean(d)));
         }
         if !h.protocols.is_empty() {
             out.push_str(&format!("  protocols: {}\n", h.protocols.join(", ")));
@@ -413,7 +437,7 @@ fn render_text(r: &ScanReport) -> String {
                     "    {}/{} {}\n",
                     p.port,
                     p.service.clone().unwrap_or_default(),
-                    p.banner.clone().unwrap_or_default()
+                    clean(p.banner.as_deref().unwrap_or(""))
                 ));
             }
         }
@@ -423,8 +447,8 @@ fn render_text(r: &ScanReport) -> String {
                 out.push_str(&format!(
                     "    [{}] {} - {}",
                     f.rank().as_str(),
-                    f.title,
-                    f.detail
+                    clean(&f.title),
+                    clean(&f.detail)
                 ));
                 if let Some(cvss) = f.cvss {
                     out.push_str(&format!(" [CVSS {}]", cvss));
@@ -685,7 +709,7 @@ fn main() {
     let arp_arc = Arc::new(arp);
 
     let rate = if opts.rate_limit == 0 {
-        (opts.threads * 2).max(8)
+        opts.threads.saturating_mul(2).max(8)
     } else {
         opts.rate_limit
     };
@@ -796,7 +820,7 @@ fn main() {
     };
     let text = build_report_text(&report, &opts.output);
     if let Some(path) = &opts.out {
-        match std::fs::write(path, text) {
+        match upd::atomic_write(std::path::Path::new(path), text.as_bytes(), false) {
             Ok(()) => eprintln!("report written to {}", path),
             Err(e) => {
                 eprintln!("write failed: {}", e);

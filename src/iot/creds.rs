@@ -88,9 +88,11 @@ fn load(explicit: Option<&str>) -> CredDb {
     candidates.push("/etc/boggy/creds.json".to_string());
     for path in &candidates {
         if let Ok(data) = std::fs::read_to_string(path) {
-            if let Some(db) = decode(&data) {
-                if !db.generic.http.is_empty() {
-                    return db;
+            if crate::update::validate_creds(data.as_bytes()).is_ok() {
+                if let Some(db) = decode(&data) {
+                    if !db.generic.http.is_empty() {
+                        return db;
+                    }
                 }
             }
         }
@@ -288,6 +290,12 @@ fn authenticated(resp: &HttpResponse) -> bool {
     if resp.status == 401 || resp.status == 403 {
         return false;
     }
+    if let Some(location) = resp.header("location") {
+        let target = location.to_ascii_lowercase();
+        if target.contains("login") || target.contains("signin") {
+            return false;
+        }
+    }
     resp.ok()
 }
 
@@ -305,7 +313,6 @@ fn form_login_succeeded(resp: &HttpResponse, pass_field: &str) -> bool {
     }
     let still_login = body.contains(&format!("name=\"{}\"", pass_field.to_ascii_lowercase()))
         || body.contains(&format!("name='{}'", pass_field.to_ascii_lowercase()));
-    let cookie = resp.header("set-cookie").is_some();
     let success_marker = [
         "logout",
         "dashboard",
@@ -316,7 +323,9 @@ fn form_login_succeeded(resp: &HttpResponse, pass_field: &str) -> bool {
     ]
     .iter()
     .any(|s| body.contains(s));
-    !still_login && (cookie || success_marker)
+    // A failed login often sets a session cookie too; require a real success
+    // marker and the absence of the password field.
+    !still_login && success_marker
 }
 
 fn parse_form(body: &str) -> Option<(String, String, String)> {
@@ -337,8 +346,16 @@ fn parse_form(body: &str) -> Option<(String, String, String)> {
     };
     let mut user_field = None;
     let mut pass_field = None;
+    let form_close = lower[form_end..]
+        .find("</form")
+        .map(|i| form_end + i)
+        .unwrap_or(lower.len());
     let mut pos = form_end;
-    while let Some(rel) = lower[pos..].find("<input") {
+    while pos < form_close {
+        let rel = match lower[pos..form_close].find("<input") {
+            Some(r) => r,
+            None => break,
+        };
         let start = pos + rel;
         let end = match lower[start..].find('>') {
             Some(e) => start + e + 1,
@@ -368,8 +385,16 @@ fn parse_form(body: &str) -> Option<(String, String, String)> {
 
 fn attr(tag: &str, name: &str) -> Option<String> {
     let key = format!("{}=", name);
-    let at = tag.find(&key)? + key.len();
-    let rest = &tag[at..];
+    let mut from = 0;
+    let found = loop {
+        let rel = tag[from..].find(&key)?;
+        let at = from + rel;
+        if at == 0 || tag.as_bytes()[at - 1].is_ascii_whitespace() {
+            break at;
+        }
+        from = at + 1;
+    };
+    let rest = &tag[found + key.len()..];
     let quote = rest.as_bytes().first().copied()?;
     if quote != b'"' && quote != b'\'' {
         let end = rest
@@ -411,6 +436,62 @@ fn read_available(stream: &mut TcpStream, buf: &mut [u8], timeout_ms: u64) -> St
     }
 }
 
+/// One credential attempt on its own connection: a failed login frequently makes
+/// embedded Telnet servers close the socket, so reusing it causes false negatives.
+fn telnet_attempt(ip: Ipv4Addr, port: u16, to: u64, user: &str, pass: &str) -> bool {
+    let mut stream = match TcpStream::connect_timeout(
+        &std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port),
+        Duration::from_millis(to),
+    ) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(to)));
+    let mut buf = [0u8; 2048];
+    let greeting = read_available(&mut stream, &mut buf, to).to_ascii_lowercase();
+    if greeting.is_empty() {
+        return false;
+    }
+    let mut response = String::new();
+    if greeting.contains("login:") || greeting.contains("username:") {
+        if stream
+            .write_all(format!("{}\r\n", user).as_bytes())
+            .is_err()
+        {
+            return false;
+        }
+        response = read_available(&mut stream, &mut buf, to).to_ascii_lowercase();
+        if !response.contains("password") {
+            return false;
+        }
+    }
+    if stream
+        .write_all(format!("{}\r\n", pass).as_bytes())
+        .is_err()
+    {
+        return false;
+    }
+    let answer = read_available(&mut stream, &mut buf, to).to_ascii_lowercase();
+    response.push_str(&answer);
+    if [
+        "incorrect",
+        "invalid",
+        "failed",
+        "denied",
+        "try again",
+        "authentication failed",
+    ]
+    .iter()
+    .any(|s| response.contains(s))
+    {
+        return false;
+    }
+    let shell_prompt = ['#', '$', '>']
+        .iter()
+        .any(|c| answer.trim_end().ends_with(*c));
+    shell_prompt || answer.contains("welcome") || answer.contains("busybox")
+}
+
 pub fn telnet_default_creds(
     ip: Ipv4Addr,
     port: u16,
@@ -421,65 +502,9 @@ pub fn telnet_default_creds(
 ) -> Vec<Finding> {
     let db = load(explicit_db);
     let pairs = select(&db, "telnet", vendor, limit);
-    if pairs.is_empty() {
-        return Vec::new();
-    }
     let to = timeout_ms.max(150).min(900);
-    let mut stream = match TcpStream::connect_timeout(
-        &std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port),
-        Duration::from_millis(to),
-    ) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(to)));
-    let mut buf = [0u8; 2048];
-    let greeting = read_available(&mut stream, &mut buf, to).to_ascii_lowercase();
-    if greeting.is_empty() {
-        return Vec::new();
-    }
-    let asks_user = greeting.contains("login:") || greeting.contains("username:");
     for (user, pass) in &pairs {
-        let mut response = String::new();
-        if asks_user {
-            if stream
-                .write_all(format!("{}\r\n", user).as_bytes())
-                .is_err()
-            {
-                break;
-            }
-            response = read_available(&mut stream, &mut buf, to).to_ascii_lowercase();
-            if !response.contains("password") {
-                continue;
-            }
-        }
-        if stream
-            .write_all(format!("{}\r\n", pass).as_bytes())
-            .is_err()
-        {
-            break;
-        }
-        let answer = read_available(&mut stream, &mut buf, to).to_ascii_lowercase();
-        response.push_str(&answer);
-        let lower = response.to_ascii_lowercase();
-        if [
-            "incorrect",
-            "invalid",
-            "failed",
-            "denied",
-            "try again",
-            "authentication failed",
-        ]
-        .iter()
-        .any(|s| lower.contains(s))
-        {
-            continue;
-        }
-        let shell_prompt = ['#', '$', '>']
-            .iter()
-            .any(|c| answer.trim_end().ends_with(*c));
-        let welcome = answer.contains("welcome") || answer.contains("busybox");
-        if shell_prompt || welcome {
+        if telnet_attempt(ip, port, to, user, pass) {
             return vec![found(
                 "DEFAULT_CREDS_TELNET",
                 "Default Telnet credentials accepted",
@@ -494,6 +519,49 @@ pub fn telnet_default_creds(
     Vec::new()
 }
 
+fn ftp_attempt(ip: Ipv4Addr, port: u16, to: u64, user: &str, pass: &str) -> Option<&'static str> {
+    let mut stream = match TcpStream::connect_timeout(
+        &std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port),
+        Duration::from_millis(to),
+    ) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(to)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(to)));
+    let mut buf = [0u8; 1024];
+    let greeting = read_available(&mut stream, &mut buf, to);
+    if !greeting.starts_with('2') {
+        return None;
+    }
+    if stream
+        .write_all(format!("USER {}\r\n", user).as_bytes())
+        .is_err()
+    {
+        return None;
+    }
+    let user_reply = read_available(&mut stream, &mut buf, to);
+    if !(user_reply.starts_with("331") || user_reply.starts_with("230")) {
+        return None;
+    }
+    if stream
+        .write_all(format!("PASS {}\r\n", pass).as_bytes())
+        .is_err()
+    {
+        return None;
+    }
+    let pass_reply = read_available(&mut stream, &mut buf, to);
+    if pass_reply.starts_with("230") {
+        Some(if user.eq_ignore_ascii_case("anonymous") {
+            "FTP_ANONYMOUS"
+        } else {
+            "DEFAULT_CREDS_FTP"
+        })
+    } else {
+        None
+    }
+}
+
 pub fn ftp_default_creds(
     ip: Ipv4Addr,
     port: u16,
@@ -504,48 +572,9 @@ pub fn ftp_default_creds(
 ) -> Vec<Finding> {
     let db = load(explicit_db);
     let pairs = select(&db, "ftp", vendor, limit);
-    if pairs.is_empty() {
-        return Vec::new();
-    }
     let to = timeout_ms.max(150).min(1200);
-    let mut stream = match TcpStream::connect_timeout(
-        &std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port),
-        Duration::from_millis(to),
-    ) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(to)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(to)));
-    let mut buf = [0u8; 1024];
-    let greeting = read_available(&mut stream, &mut buf, to);
-    if !greeting.starts_with('2') {
-        return Vec::new();
-    }
     for (user, pass) in &pairs {
-        if stream
-            .write_all(format!("USER {}\r\n", user).as_bytes())
-            .is_err()
-        {
-            break;
-        }
-        let user_reply = read_available(&mut stream, &mut buf, to);
-        if !(user_reply.starts_with("331") || user_reply.starts_with("230")) {
-            continue;
-        }
-        if stream
-            .write_all(format!("PASS {}\r\n", pass).as_bytes())
-            .is_err()
-        {
-            break;
-        }
-        let pass_reply = read_available(&mut stream, &mut buf, to);
-        if pass_reply.starts_with("230") {
-            let id = if user.eq_ignore_ascii_case("anonymous") {
-                "FTP_ANONYMOUS"
-            } else {
-                "DEFAULT_CREDS_FTP"
-            };
+        if let Some(id) = ftp_attempt(ip, port, to, user, pass) {
             let sev = if id == "FTP_ANONYMOUS" {
                 "high"
             } else {
@@ -617,6 +646,50 @@ mod tests {
         let pairs = select(&db, "http", "Hikvision", 10);
         assert!(pairs.len() <= 10);
         assert!(pairs.iter().any(|(u, p)| u == "admin" && p == "12345"));
+    }
+
+    #[test]
+    fn telnet_reconnects_after_failure() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let connections = Arc::new(AtomicUsize::new(0));
+        let counter = connections.clone();
+        let server = thread::spawn(move || {
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                counter.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                let mut buf = [0u8; 256];
+                let _ = stream.write_all(b"login: ");
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(b"Password: ");
+                let _ = stream.read(&mut buf);
+                let reply = if attempt == 0 {
+                    b"Login incorrect\r\n".as_slice()
+                } else {
+                    b"Welcome to BusyBox v1.2\r\n".as_slice()
+                };
+                let _ = stream.write_all(reply);
+            }
+        });
+        let findings = telnet_default_creds(
+            "127.0.0.1".parse().unwrap(),
+            port,
+            600,
+            "NoSuchVendor",
+            3,
+            None,
+        );
+        server.join().unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(connections.load(Ordering::SeqCst), 2);
     }
 
     #[test]

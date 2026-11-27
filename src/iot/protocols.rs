@@ -293,7 +293,9 @@ pub fn coap_probe(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Finding> {
     let _ = sock.send_to(&req, (ip, port));
     let mut buf = [0u8; 512];
     if let Ok((n, _)) = sock.recv_from(&mut buf) {
-        if n > 4 && buf[0] >> 5 == 2 {
+        // CoAP header: ver(2) type(2) TKL(4), code, mid. A valid response has
+        // version 1 and a non-zero code; random UDP noise must not match.
+        if n > 4 && buf[0] >> 6 == 1 && buf[1] != 0 {
             return Some(f(
                 "COAP_OPEN",
                 "medium",
@@ -315,7 +317,10 @@ pub fn rtsp_request(
 ) -> Option<HttpResponse> {
     let mut headers = vec![
         ("CSeq".to_string(), "1".to_string()),
-        ("User-Agent".to_string(), "boggy/0.3".to_string()),
+        (
+            "User-Agent".to_string(),
+            format!("boggy/{}", env!("CARGO_PKG_VERSION")),
+        ),
     ];
     if let Some(value) = auth {
         headers.push(("Authorization".to_string(), value.to_string()));
