@@ -158,11 +158,12 @@ pub struct ScanReport {
     pub started: String,
     pub finished: String,
     pub summary: Summary,
+    pub diff: Option<Json>,
 }
 
 impl ScanReport {
     pub fn to_json(&self) -> Json {
-        Json::obj(vec![
+        let mut fields = vec![
             ("target", Json::str(&self.target)),
             (
                 "hosts",
@@ -171,7 +172,11 @@ impl ScanReport {
             ("started", Json::str(&self.started)),
             ("finished", Json::str(&self.finished)),
             ("summary", self.summary.to_json()),
-        ])
+        ];
+        if let Some(diff) = &self.diff {
+            fields.push(("diff", diff.clone()));
+        }
+        Json::obj(fields)
     }
 }
 

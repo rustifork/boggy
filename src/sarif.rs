@@ -124,6 +124,7 @@ mod tests {
             started: "0".into(),
             finished: "0".into(),
             summary: Default::default(),
+            diff: None,
         };
         let text = render(&report);
         let parsed = crate::json::parse(text.as_bytes()).unwrap();

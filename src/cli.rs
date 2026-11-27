@@ -1,5 +1,6 @@
 //! Hand-written argument parser: no clap, no external crates.
 
+use crate::config;
 use crate::source::SourceOpts;
 use crate::update::{UpdateOpts, CREDS_URL, CVE_URL, MANIFEST_URL};
 
@@ -25,6 +26,9 @@ pub enum Command {
     },
     DbInfo,
     SelfTest,
+    Config {
+        show_path: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +110,7 @@ pub struct ScanOpts {
     pub cve_file: Option<String>,
     pub creds_file: Option<String>,
     pub max_hosts: usize,
+    pub compare: Option<String>,
 }
 
 impl Default for ScanOpts {
@@ -134,6 +139,7 @@ impl Default for ScanOpts {
             cve_file: None,
             creds_file: None,
             max_hosts: 65536,
+            compare: None,
         }
     }
 }
@@ -157,6 +163,7 @@ Commands:
   self-update   Replace the binary with a verified release asset
   db-info       Show hashes and active locations of the shipped databases
   selftest      Run integrity and parser checks without cargo
+  config        Show the active configuration file or its path
   help          Print this message
 
 Options:
@@ -180,6 +187,7 @@ Options:
       --min-severity <S>    info|low|medium|high|critical
       --fail-on <S>         Exit 2 when a finding reaches this severity
       --max-hosts <N>       Refuse larger target expansions (default: 65536)
+      --compare <FILE>      Compare findings with a baseline JSON report
       --cve-file <FILE>     Override CVE database
       --creds-file <FILE>   Override credential database
   -v, --verbose             Progress on stderr
@@ -286,6 +294,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
     }
 
     let mut cli = Cli::default();
+    config::apply(&config::load(), &mut cli.scan);
     let mut i = 0;
     while i < expanded.len() {
         let arg = expanded[i].as_str();
@@ -370,6 +379,27 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
                 cli.command = Some(Command::SelfTest);
                 return finish(cli, &expanded, i + 1);
             }
+            "config" => {
+                let mut show_path = false;
+                let mut j = i + 1;
+                while j < expanded.len() {
+                    match expanded[j].as_str() {
+                        "--path" => show_path = true,
+                        "-h" | "--help" => {
+                            return Err(ParseError::Help("boggy config [--path]".into()))
+                        }
+                        other => {
+                            return Err(ParseError::Message(format!(
+                                "unknown config option: {}",
+                                other
+                            )))
+                        }
+                    }
+                    j += 1;
+                }
+                cli.command = Some(Command::Config { show_path });
+                return finish(cli, &expanded, j);
+            }
             "-t" | "--target" => {
                 cli.scan.target.push(value(&expanded, &mut i, arg)?);
             }
@@ -421,6 +451,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
             "--min-severity" => cli.scan.min_severity = value(&expanded, &mut i, arg)?,
             "--fail-on" => cli.scan.fail_on = Some(value(&expanded, &mut i, arg)?),
             "--ports" => cli.scan.ports = Some(value(&expanded, &mut i, arg)?),
+            "--compare" => cli.scan.compare = Some(value(&expanded, &mut i, arg)?),
             "--cve-file" => cli.scan.cve_file = Some(value(&expanded, &mut i, arg)?),
             "--creds-file" => cli.scan.creds_file = Some(value(&expanded, &mut i, arg)?),
             other => {
@@ -495,6 +526,13 @@ mod tests {
         assert_eq!(cli.scan.threads, 64);
         assert_eq!(cli.scan.max_hosts, 65536);
         assert_eq!(cli.scan.discovery_ms, 1500);
+        assert!(matches!(
+            parse(args(&["config", "--path"])),
+            Ok(Cli {
+                command: Some(Command::Config { show_path: true }),
+                ..
+            })
+        ));
     }
 
     #[test]

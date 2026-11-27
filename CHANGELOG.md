@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0
+
+- Baseline monitoring: `--compare FILE` computes new/missing hosts and new/resolved
+  findings, included in text and JSON reports.
+- Optional defaults from `~/.boggy/config.json` with `boggy config` / `boggy config --path`.
+- ARP table fallback to `arp -an` on systems without `/proc/net/arp`.
+- Fuzz-style tests: 2000 malformed JSON inputs and 1000 malformed HTTP responses
+  must never panic.
+
 ## 0.7.0
 
 Completeness release:

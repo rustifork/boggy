@@ -448,6 +448,19 @@ mod tests {
     }
 
     #[test]
+    fn malformed_responses_never_panic() {
+        let mut seed = 0x12345678u32;
+        for _ in 0..1000 {
+            let mut bytes = Vec::new();
+            for _ in 0..(seed % 160) {
+                seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+                bytes.push((seed >> 16) as u8);
+            }
+            let _ = parse_response(&bytes);
+        }
+    }
+
+    #[test]
     fn parse_status() {
         let raw = b"HTTP/1.1 401 Unauthorized\r\nServer: Boa/0.94\r\nWWW-Authenticate: Basic realm=\"x\"\r\n\r\nbody";
         let r = parse_response(raw).unwrap();

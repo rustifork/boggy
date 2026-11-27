@@ -26,9 +26,10 @@
 | Discovery | ARP, mDNS + TXT, SSDP/UPnP, TCP liveness |
 | Probes | HTTP Basic/Digest/forms, Telnet, FTP, MQTT, CoAP, SNMP, Redis, Modbus, Docker, ADB, NTP, BACnet, EtherNet/IP |
 | UPnP IGD | WAN IP and active port mappings via SOAP |
-| Reports | text, JSON, JSONL, SARIF 2.1.0, severity summary, CI exit codes |
+| Reports | text, JSON, JSONL, SARIF 2.1.0, baseline diff, severity summary, CI exit codes |
 | Updates | `update` = source code (git), `update-db` = data, `self-update` = binary |
-| Tests | 51 unit + 13 end-to-end |
+| Defaults | optional `~/.boggy/config.json`, inspected with `boggy config` |
+| Tests | 56 unit + 15 end-to-end |
 
 **Contents:** [Quick start](#quick-start) · [Commands](#commands) · [Security](#security) · [Architecture](#architecture) · [Testing](#testing) · [Troubleshooting](#troubleshooting)
 
@@ -91,6 +92,7 @@ boggy --target 192.168.1.0/24 -j 8 --rate-limit 32 --timeout 500
 | `--cred-limit <N>` | Credential attempts per service, default 24 |
 | `--max-cve <N>` | CVE findings per host, default 15 |
 | `--max-hosts <N>` | Refuse larger CIDR expansions, default 65536 |
+| `--compare <FILE>` | Diff findings against a baseline JSON report |
 | `--min-severity <S>` | `info\|low\|medium\|high\|critical` |
 | `--fail-on <S>` | Exit 2 when a finding reaches this severity |
 | `-o, --output <FMT>` | `text`, `json`, `jsonl`, `sarif` |
@@ -136,6 +138,8 @@ boggy update-check                    # release version only
 boggy db-info                         # embedded hashes and active overrides
 boggy self-update                     # verified release binary
 boggy selftest                        # 17 integrity/parser checks
+boggy config                          # show effective config file
+./target/release/boggy --target 192.168.1.0/24 --compare baseline.json
 ```
 
 ---
@@ -186,7 +190,7 @@ Everything lives in `src/`: `net` (discovery, ports, HTTP, MD5, SHA-256), `iot` 
 ## Testing
 
 ```sh
-cargo test                 # 51 unit + 13 end-to-end checks
+cargo test                 # 56 unit + 15 end-to-end checks
 cargo run -- selftest      # runs inside the binary, no cargo needed on target
 cargo fmt --check
 ```

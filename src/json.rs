@@ -477,6 +477,19 @@ mod tests {
     }
 
     #[test]
+    fn malformed_input_never_panics() {
+        let mut seed = 0x9e3779b9u32;
+        for _ in 0..2000 {
+            let mut bytes = Vec::new();
+            for _ in 0..(seed % 96) {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                bytes.push((seed >> 16) as u8);
+            }
+            let _ = parse(&bytes);
+        }
+    }
+
+    #[test]
     fn deep_nesting_is_bounded() {
         let deep = "[".repeat(100) + &"]".repeat(100);
         assert!(parse(deep.as_bytes()).is_err());

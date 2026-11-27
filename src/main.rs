@@ -1,4 +1,6 @@
 mod cli;
+mod config;
+mod diff;
 mod iot;
 mod json;
 mod net;
@@ -553,6 +555,9 @@ fn render_text(r: &ScanReport) -> String {
         }
         out.push('\n');
     }
+    if let Some(diff) = &r.diff {
+        out.push_str(&crate::diff::render_text(diff));
+    }
     out
 }
 
@@ -673,6 +678,14 @@ fn main() {
                     eprintln!("db-info failed: {}", e);
                     std::process::exit(1);
                 }
+            }
+            return;
+        }
+        Some(Command::Config { show_path }) => {
+            if *show_path {
+                println!("{}", config::path().display());
+            } else {
+                println!("{}", config::show());
             }
             return;
         }
@@ -912,13 +925,23 @@ fn main() {
         }
     }
 
-    let report = ScanReport {
+    let mut report = ScanReport {
         target: target_str,
         hosts,
         started,
         finished,
         summary,
+        diff: None,
     };
+    if let Some(baseline) = &opts.compare {
+        match diff::compare(&report, baseline) {
+            Ok(result) => report.diff = Some(result),
+            Err(e) => {
+                eprintln!("baseline comparison failed: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
     let text = build_report_text(&report, &opts.output);
     if let Some(path) = &opts.out {
         match upd::atomic_write(std::path::Path::new(path), text.as_bytes(), false) {

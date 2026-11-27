@@ -48,6 +48,8 @@ which makes it usable as a CI gate.
 - `--discovery-ms MS` mDNS/SSDP listen window (default 1500)
 - `--cve-file` / `--creds-file` override databases
 - `-o, --output text|json|jsonl|sarif`
+- `--compare FILE` diff against a baseline report
+- `boggy config` / `--path` inspect optional defaults
 - `--out FILE` write report to file
 - `-v` progress on stderr
 

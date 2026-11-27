@@ -284,6 +284,26 @@ pub fn ssdp_scan(timeout_ms: u64) -> Vec<SsdpEntry> {
     out
 }
 
+fn parse_arp_command(text: &str) -> BTreeMap<Ipv4Addr, String> {
+    let mut map = BTreeMap::new();
+    for line in text.lines() {
+        let ip = line
+            .split_whitespace()
+            .find(|t| t.starts_with('(') && t.ends_with(')'))
+            .and_then(|t| t[1..t.len() - 1].parse::<Ipv4Addr>().ok());
+        let mac = line
+            .split_whitespace()
+            .find(|t| t.matches(':').count() == 5)
+            .map(str::to_string);
+        if let (Some(ip), Some(mac)) = (ip, mac) {
+            if !mac.starts_with("0:0") && mac.contains(':') {
+                map.insert(ip, mac);
+            }
+        }
+    }
+    map
+}
+
 pub fn arp_table() -> BTreeMap<Ipv4Addr, String> {
     let mut map = BTreeMap::new();
     if let Ok(s) = std::fs::read_to_string("/proc/net/arp") {
@@ -299,12 +319,31 @@ pub fn arp_table() -> BTreeMap<Ipv4Addr, String> {
             }
         }
     }
+    if map.is_empty() {
+        // macOS/BSD have no /proc/net/arp; fall back to the arp utility.
+        if let Ok(output) = std::process::Command::new("arp").arg("-an").output() {
+            if output.status.success() {
+                map.extend(parse_arp_command(&String::from_utf8_lossy(&output.stdout)));
+            }
+        }
+    }
     map
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ptr_query;
+    use super::{parse_arp_command, ptr_query};
+
+    #[test]
+    fn parses_bsd_arp_output() {
+        let text = "? (192.168.1.9) at aa:bb:cc:dd:ee:ff on en0 ifscope [ethernet]\n? (192.168.1.1) at 0:0:0:0:0:0 on en0";
+        let map = parse_arp_command(text);
+        assert_eq!(map.len(), 1);
+        assert_eq!(
+            map.get(&"192.168.1.9".parse().unwrap()).map(String::as_str),
+            Some("aa:bb:cc:dd:ee:ff")
+        );
+    }
 
     #[test]
     fn dns_query_layout() {

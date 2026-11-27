@@ -238,6 +238,53 @@ fn parallel_ports_and_keepalive_servers() {
 }
 
 #[test]
+fn config_file_is_readable() {
+    let home = tmp("config-home");
+    let dir = home.join(".boggy");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("config.json"),
+        r#"{"threads":3,"min_severity":"high","target":["127.0.0.1/32"]}"#,
+    )
+    .unwrap();
+    let out = run(bin().arg("config").env("HOME", &home));
+    let text = ok(&out);
+    assert!(text.contains("threads"), "{}", text);
+    assert!(text.contains("high"), "{}", text);
+    let path = run(bin().args(["config", "--path"]).env("HOME", &home));
+    assert!(ok(&path).contains("config.json"));
+}
+
+#[test]
+fn baseline_comparison_is_reported() {
+    let dir = tmp("baseline");
+    let baseline = dir.join("baseline.json");
+    fs::write(
+        &baseline,
+        r#"{"hosts":[{"ip":"192.168.99.99","findings":[{"id":"OLD","detail":"gone"}]}]}"#,
+    )
+    .unwrap();
+    let out = run(bin().args([
+        "--discovery-ms",
+        "100",
+        "--target",
+        "127.0.0.1/32",
+        "--ports",
+        "1",
+        "--timeout",
+        "100",
+        "--no-creds",
+        "--no-cve",
+        "--compare",
+        baseline.to_str().unwrap(),
+    ]));
+    let text = ok(&out);
+    assert!(text.contains("baseline comparison"), "{}", text);
+    assert!(text.contains("missing hosts: 1"), "{}", text);
+    assert!(text.contains("resolved findings: 1"), "{}", text);
+}
+
+#[test]
 fn sarif_output_is_well_formed() {
     let out = run(bin().args([
         "--discovery-ms",

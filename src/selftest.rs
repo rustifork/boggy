@@ -123,6 +123,7 @@ pub fn run() -> Result<String, String> {
         started: "0".into(),
         finished: "0".into(),
         summary: Summary::default(),
+        diff: None,
     };
     let report_json = report.to_json().compact();
     let roundtrip = crate::json::parse(report_json.as_bytes())
