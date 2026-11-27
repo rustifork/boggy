@@ -1,0 +1,14 @@
+{
+ "version": 1,
+ "generated": "2026-11-27",
+ "cves": {
+  "file": "cves.json",
+  "sha256": "4c2ce7e626c6da6ee0181b13180e818999ba5537d8a62924f4437148467cef6d",
+  "entries": 677
+ },
+ "creds": {
+  "file": "creds.json",
+  "sha256": "3ed91204821c9fa47ec442d4e11efc45b2ad876291d84225d302caf676c17edc",
+  "entries": 302
+ }
+}

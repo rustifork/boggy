@@ -50,13 +50,24 @@ which makes it usable as a CI gate.
 - `--out FILE` write report to file
 - `-v` progress on stderr
 
-## Database refresh
+## Updates
 
 ```sh
-boggy update-db                         # both databases into ~/.boggy/
+boggy update-db                          # both databases into ~/.boggy/, verified
 boggy update-db --cves-only
-boggy update-db --creds-url https://example.org/creds.json
+boggy update-db --creds-only
+boggy update-db --url https://mirror/cves.json --cves-sha256 <hex>
+boggy update                             # release check + database refresh
+boggy update --check-only
+boggy update --self                      # verified self-update of the binary
+boggy update-check
+boggy db-info
 ```
+
+Downloads are SHA-256 pinned against `db/manifest.json`, limited in size, never follow
+redirects and reject plain HTTP unless `--allow-http` is given. Writes are atomic:
+databases are mode 0600, the self-updated binary 0755. A checksum or schema mismatch
+aborts the whole update before any file is replaced.
 
 The refresh tool `tools/refresh_cves.py` can extend the embedded CVE database from NVD:
 

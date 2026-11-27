@@ -20,7 +20,16 @@ jobs:
       - name: Tests
         run: cargo test
       - name: Database validation
-        run: python3 -c "import json; assert len(json.load(open('db/cves.json'))) > 500; assert len(json.load(open('db/creds.json'))['generic']['http']) > 20"
+        run: |
+          python3 - <<'PY'
+          import hashlib, json
+          m = json.load(open('db/manifest.json'))
+          for key, path in (('cves', 'db/cves.json'), ('creds', 'db/creds.json')):
+              data = open(path, 'rb').read()
+              assert hashlib.sha256(data).hexdigest() == m[key]['sha256'], key
+          assert len(json.load(open('db/cves.json'))) > 500
+          assert len(json.load(open('db/creds.json'))['generic']['http']) > 20
+          PY
 
   build:
     needs: check

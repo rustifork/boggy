@@ -1,7 +1,5 @@
-use clap::{Parser, Subcommand};
-
-const CVE_URL: &str = "https://raw.githubusercontent.com/rustifork/boggy/main/db/cves.json";
-const CREDS_URL: &str = "https://raw.githubusercontent.com/rustifork/boggy/main/db/creds.json";
+use crate::update::{UpdateOpts, CREDS_URL, CVE_URL, MANIFEST_URL};
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -17,26 +15,96 @@ pub struct Cli {
     pub scan: ScanOpts,
 }
 
+#[derive(Args, Debug, Clone)]
+pub struct DbUpdateArgs {
+    /// CVE database destination (default: ~/.boggy/cves.json)
+    #[arg(long)]
+    pub out: Option<String>,
+
+    /// CVE database source URL
+    #[arg(long, default_value = CVE_URL)]
+    pub url: String,
+
+    /// Credential database source URL
+    #[arg(long, default_value = CREDS_URL)]
+    pub creds_url: String,
+
+    /// Credential database destination (default: ~/.boggy/creds.json)
+    #[arg(long)]
+    pub creds_out: Option<String>,
+
+    /// Signed manifest URL used for sha256 verification
+    #[arg(long, default_value = MANIFEST_URL)]
+    pub manifest_url: String,
+
+    /// Update only the CVE database
+    #[arg(long, default_value_t = false)]
+    pub cves_only: bool,
+
+    /// Update only the credential database
+    #[arg(long, default_value_t = false)]
+    pub creds_only: bool,
+
+    /// Skip sha256 manifest verification (not recommended)
+    #[arg(long, default_value_t = false)]
+    pub no_verify: bool,
+
+    /// Allow plain HTTP downloads
+    #[arg(long, default_value_t = false)]
+    pub allow_http: bool,
+
+    /// Override the expected CVE sha256
+    #[arg(long)]
+    pub cves_sha256: Option<String>,
+
+    /// Override the expected credential sha256
+    #[arg(long)]
+    pub creds_sha256: Option<String>,
+}
+
+impl DbUpdateArgs {
+    pub fn to_opts(&self) -> UpdateOpts {
+        UpdateOpts {
+            cves_url: self.url.clone(),
+            creds_url: self.creds_url.clone(),
+            manifest_url: self.manifest_url.clone(),
+            cves_out: self.out.clone(),
+            creds_out: self.creds_out.clone(),
+            verify: !self.no_verify,
+            allow_http: self.allow_http,
+            cves_only: self.cves_only,
+            creds_only: self.creds_only,
+            cves_sha256: self.cves_sha256.clone(),
+            creds_sha256: self.creds_sha256.clone(),
+        }
+    }
+}
+
 #[derive(Subcommand, Debug, Clone)]
 pub enum Command {
-    /// Download the latest CVE and credential databases
+    /// Download and verify the latest CVE and credential databases
     UpdateDb {
-        /// CVE database destination (default: ~/.boggy/cves.json)
-        #[arg(long)]
-        out: Option<String>,
-        /// CVE database source URL
-        #[arg(long, default_value = CVE_URL)]
-        url: String,
-        /// Credential database source URL
-        #[arg(long, default_value = CREDS_URL)]
-        creds_url: String,
-        /// Credential database destination (default: ~/.boggy/creds.json)
-        #[arg(long)]
-        creds_out: Option<String>,
-        /// Skip the credential database download
-        #[arg(long, default_value_t = false)]
-        cves_only: bool,
+        #[command(flatten)]
+        db: DbUpdateArgs,
     },
+    /// Check for a release and refresh databases (or self-update)
+    Update {
+        #[command(flatten)]
+        db: DbUpdateArgs,
+        /// Replace the running binary with the verified release asset
+        #[arg(long = "self", default_value_t = false)]
+        self_update: bool,
+        /// Only print the latest release information
+        #[arg(long, default_value_t = false)]
+        check_only: bool,
+        /// Skip the database refresh
+        #[arg(long, default_value_t = false)]
+        no_db: bool,
+    },
+    /// Print the latest release version without changing anything
+    UpdateCheck,
+    /// Show hashes and active locations of the shipped databases
+    DbInfo,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -124,4 +192,8 @@ pub struct ScanOpts {
     /// Use a custom credential database file
     #[arg(long)]
     pub creds_file: Option<String>,
+
+    /// Refuse targets with more addresses than this (0 = unlimited)
+    #[arg(long, default_value_t = 65536)]
+    pub max_hosts: usize,
 }

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0
+
+- Update commands: `update-db` (verified), `update` (release check + DB refresh or
+  `--self`), `update-check`, `db-info`.
+- Download hardening: HTTPS-only by default, redirects disabled, size limits, SHA-256
+  pinning via `db/manifest.json`, constant-time digest comparison.
+- Strict structural validation of both databases before writing; fetch-all-then-write
+  so a bad file never leaves a partial update.
+- Atomic writes with create-new temp files, `fsync` and rename; 0600 for databases,
+  0755 for the self-updated binary; no symlink following.
+- Self-update resolves the architecture-specific release asset, checks the ELF magic
+  and verifies SHA-256 from the release digest or `SHA256SUMS`.
+- Removed per-attempt memory leaks in form-login probing; added `--max-hosts` guard.
+- `net/sha256` added without new dependencies; 30 unit tests.
+
 ## 0.2.0
 
 - CVE database: 43 → 677 entries (NVD-derived IoT/OT coverage plus curated core),

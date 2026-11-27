@@ -315,7 +315,7 @@ pub fn rtsp_request(
 ) -> Option<HttpResponse> {
     let mut headers = vec![
         ("CSeq".to_string(), "1".to_string()),
-        ("User-Agent".to_string(), "boggy/0.2".to_string()),
+        ("User-Agent".to_string(), "boggy/0.3".to_string()),
     ];
     if let Some(value) = auth {
         headers.push(("Authorization".to_string(), value.to_string()));

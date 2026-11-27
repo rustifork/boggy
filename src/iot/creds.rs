@@ -217,7 +217,7 @@ pub fn http_default_creds(
                 let body = form_body(&user_field, user, &pass_field, pass);
                 let req = HttpRequest {
                     method: "POST",
-                    path: leak_path(&action),
+                    path: &action,
                     headers: vec![("Referer".into(), format!("http://{}:{}/", ip, port))],
                     body: body.into_bytes(),
                 };
@@ -238,10 +238,6 @@ pub fn http_default_creds(
         }
     }
     Vec::new()
-}
-
-fn leak_path(path: &str) -> &'static str {
-    Box::leak(path.to_string().into_boxed_str())
 }
 
 fn authenticated(resp: &HttpResponse) -> bool {

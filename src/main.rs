@@ -2,6 +2,7 @@ mod cli;
 mod iot;
 mod net;
 mod types;
+mod update;
 
 use crate::cli::{Cli, Command, ScanOpts};
 use crate::iot::creds as dc;
@@ -10,6 +11,7 @@ use crate::net::discover;
 use crate::net::ports;
 use crate::net::subnet::Subnet;
 use crate::types::{Finding, HostResult, PortResult, ScanReport, Severity, Summary};
+use crate::update as upd;
 use clap::Parser;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
@@ -55,125 +57,6 @@ fn now_str() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     secs.to_string()
-}
-
-fn fetch_url(url: &str) -> Result<String, String> {
-    if url.starts_with("https://") {
-        #[cfg(feature = "https")]
-        {
-            let resp = ureq::get(url).call().map_err(|e| e.to_string())?;
-            let mut s = String::new();
-            use std::io::Read;
-            resp.into_reader()
-                .read_to_string(&mut s)
-                .map_err(|e| e.to_string())?;
-            return Ok(s);
-        }
-        #[cfg(not(feature = "https"))]
-        {
-            for tool in ["curl", "wget"] {
-                let args = if tool == "curl" {
-                    vec!["-fsSL", url]
-                } else {
-                    vec!["-qO-", url]
-                };
-                if let Ok(o) = std::process::Command::new(tool).args(args).output() {
-                    if o.status.success() {
-                        return Ok(String::from_utf8_lossy(&o.stdout).to_string());
-                    }
-                }
-            }
-            return Err("https fetch requires curl or wget (build with --features https)".into());
-        }
-    }
-    if url.starts_with("http://") {
-        let without = url.trim_start_matches("http://");
-        let (hostpart, path) = match without.find('/') {
-            Some(i) => (&without[..i], &without[i..]),
-            None => (without, "/"),
-        };
-        let host = hostpart.split(':').next().unwrap_or(hostpart);
-        let port: u16 = hostpart
-            .split(':')
-            .nth(1)
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(80);
-        use std::io::{Read, Write};
-        use std::net::TcpStream;
-        let mut stream = TcpStream::connect((host, port)).map_err(|e| e.to_string())?;
-        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(30)));
-        let req = format!(
-            "GET {} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n",
-            path, hostpart
-        );
-        stream
-            .write_all(req.as_bytes())
-            .map_err(|e| e.to_string())?;
-        let mut buf = Vec::new();
-        let mut tmp = [0u8; 8192];
-        loop {
-            match stream.read(&mut tmp) {
-                Ok(0) => break,
-                Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                Err(_) => break,
-            }
-        }
-        let text = String::from_utf8_lossy(&buf).to_string();
-        return match text.find("\r\n\r\n") {
-            Some(i) => Ok(text[i + 4..].to_string()),
-            None => Ok(text),
-        };
-    }
-    std::fs::read_to_string(url).map_err(|e| e.to_string())
-}
-
-fn download(url: &str, dest: &str, expect_array: bool) -> Result<(), String> {
-    let body = fetch_url(url)?;
-    let value: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| format!("invalid JSON: {}", e))?;
-    if expect_array != value.is_array() {
-        return Err(format!(
-            "expected {} but got a different JSON shape",
-            if expect_array {
-                "an array"
-            } else {
-                "an object"
-            }
-        ));
-    }
-    if let Some(parent) = std::path::Path::new(dest).parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    std::fs::write(dest, body).map_err(|e| e.to_string())
-}
-
-fn update_db(
-    out: Option<String>,
-    url: &str,
-    creds_url: &str,
-    creds_out: Option<String>,
-    cves_only: bool,
-) {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let cves_dest = out.unwrap_or_else(|| format!("{}/.boggy/cves.json", home));
-    match download(url, &cves_dest, true) {
-        Ok(()) => println!("CVE database updated: {}", cves_dest),
-        Err(e) => {
-            eprintln!("CVE download failed: {}", e);
-            std::process::exit(1);
-        }
-    }
-    if cves_only {
-        return;
-    }
-    let creds_dest = creds_out.unwrap_or_else(|| format!("{}/.boggy/creds.json", home));
-    match download(creds_url, &creds_dest, false) {
-        Ok(()) => println!("Credential database updated: {}", creds_dest),
-        Err(e) => {
-            eprintln!("Credential download failed: {}", e);
-            std::process::exit(1);
-        }
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -574,16 +457,92 @@ fn build_report_text(report: &ScanReport, output: &str) -> String {
 fn main() {
     let cli = Cli::parse();
 
-    if let Some(Command::UpdateDb {
-        out,
-        url,
-        creds_url,
-        creds_out,
-        cves_only,
-    }) = &cli.command
-    {
-        update_db(out.clone(), url, creds_url, creds_out.clone(), *cves_only);
-        return;
+    match &cli.command {
+        Some(Command::UpdateDb { db }) => {
+            match upd::update_databases(&db.to_opts()) {
+                Ok(summary) => println!("{}", summary),
+                Err(e) => {
+                    eprintln!("update failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+        Some(Command::Update {
+            db,
+            self_update,
+            check_only,
+            no_db,
+        }) => {
+            match upd::check_latest() {
+                Ok(check) => {
+                    println!(
+                        "boggy {}{} (latest release {})",
+                        check.version,
+                        if check.newer { " is outdated" } else { "" },
+                        check.tag
+                    );
+                    if !check.assets.is_empty() {
+                        println!("assets: {}", check.assets.join(", "));
+                    }
+                }
+                Err(e) => eprintln!("release check failed: {}", e),
+            }
+            if *check_only {
+                return;
+            }
+            if *self_update {
+                match upd::self_update(db.allow_http) {
+                    Ok(message) => {
+                        println!("{}", message);
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("self-update failed: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            if !*no_db {
+                match upd::update_databases(&db.to_opts()) {
+                    Ok(summary) => println!("{}", summary),
+                    Err(e) => {
+                        eprintln!("update failed: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            return;
+        }
+        Some(Command::UpdateCheck) => {
+            match upd::check_latest() {
+                Ok(check) => {
+                    println!(
+                        "boggy {}{} (latest release {})",
+                        check.version,
+                        if check.newer { " is outdated" } else { "" },
+                        check.tag
+                    );
+                    println!("assets: {}", check.assets.join(", "));
+                }
+                Err(e) => {
+                    eprintln!("release check failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+        Some(Command::DbInfo) => {
+            match upd::db_info() {
+                Ok(info) => println!("{}", info),
+                Err(e) => {
+                    eprintln!("db-info failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+        None => {}
     }
 
     let opts = &cli.scan;
@@ -661,6 +620,15 @@ fn main() {
     arp.retain(|ip, _| all_hosts.contains(ip));
     all_hosts.sort();
     all_hosts.dedup();
+
+    if opts.max_hosts > 0 && all_hosts.len() > opts.max_hosts {
+        eprintln!(
+            "target expands to {} hosts (limit {}); narrow --target or raise --max-hosts",
+            all_hosts.len(),
+            opts.max_hosts
+        );
+        std::process::exit(1);
+    }
 
     if opts.verbose {
         eprintln!(

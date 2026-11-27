@@ -61,7 +61,7 @@ pub fn request(
     let line = format!("{} {} HTTP/1.0", req.method, req.path);
     let mut headers = Vec::with_capacity(req.headers.len() + 1);
     headers.push(("Host".to_string(), format!("{}:{}", ip, port)));
-    headers.push(("User-Agent".to_string(), "boggy/0.2".to_string()));
+    headers.push(("User-Agent".to_string(), "boggy/0.3".to_string()));
     headers.extend(req.headers.iter().cloned());
     raw_request(ip, port, &line, &headers, &req.body, timeout_ms)
 }
