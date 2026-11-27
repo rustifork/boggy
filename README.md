@@ -21,7 +21,7 @@
 
 | | |
 |---|---|
-| Binary size | ~1.2 MB, `std`-only, offline build |
+| Binary size | ~1.3 MB, `std`-only, offline build |
 | Databases | 677 IoT/OT CVEs, 278 credential pairs |
 | Discovery | ARP, mDNS, SSDP/UPnP, TCP liveness |
 | Probes | HTTP Basic/Digest/forms, Telnet, FTP, MQTT, CoAP, SNMP, Redis, Modbus, Docker, ADB… |
@@ -149,6 +149,10 @@ boggy selftest                        # 15 integrity/parser checks
 - Replaced binaries are checked for the host architecture; source and report files use atomic writes.
 - Local database overrides are structurally validated before use; CLI rejects invalid severity, format and conflicting flags.
 - Git arguments are passed as an array, branch names and URLs are validated, and local changes cannot be silently discarded.
+
+Performance notes: one connection per port, connect timeout capped at 400 ms,
+mDNS/SSDP run concurrently, both JSON databases are parsed once per scan, and UDP/SNMP
+or credential retries are time-bounded so a single quiet host cannot stall a worker.
 
 **Out of scope:** TLS inspection, active exploitation, authenticated version confirmation, zero-day discovery. A CVE match means "this device looks affected" — confirm with the vendor advisory.
 

@@ -12,7 +12,7 @@ struct Affected {
 }
 
 #[derive(Clone, Debug)]
-struct CveEntry {
+pub struct CveEntry {
     id: String,
     cve: Option<String>,
     severity: String,
@@ -103,7 +103,7 @@ fn decode(data: &str) -> Option<Vec<CveEntry>> {
     Some(rows.iter().filter_map(entry).collect())
 }
 
-fn load(explicit: Option<&str>) -> Vec<CveEntry> {
+pub fn load(explicit: Option<&str>) -> Vec<CveEntry> {
     let mut candidates: Vec<String> = Vec::new();
     if let Some(p) = explicit {
         candidates.push(p.to_string());
@@ -165,12 +165,11 @@ fn contains_any(text: &str, words: &[String]) -> bool {
 pub fn match_host(
     host: &HostResult,
     ports: &[PortResult],
+    db: &[CveEntry],
     limit: usize,
     min_severity: Severity,
-    explicit_db: Option<&str>,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
-    let db = load(explicit_db);
     let text = fingerprint_text(host, ports);
     let open_ports: Vec<u16> = ports.iter().filter(|p| p.open).map(|p| p.port).collect();
     let hints = versions(&text);
@@ -421,7 +420,7 @@ mod tests {
     fn keyword_and_port_match() {
         let h = host("Hikvision", "ip camera");
         let ports = vec![port(80, "Hikvision-Webs 4.0")];
-        let findings = match_host(&h, &ports, 0, Severity::Info, None);
+        let findings = match_host(&h, &ports, &load(None), 0, Severity::Info);
         assert!(findings.iter().any(|f| f.id == "CVE-2021-36260"));
     }
 
@@ -430,8 +429,8 @@ mod tests {
         let h = host("Apache", "web server");
         let old = vec![port(80, "Apache/2.4.49 (Ubuntu)")];
         let new = vec![port(80, "Apache/2.4.51 (Ubuntu)")];
-        let a = match_host(&h, &old, 0, Severity::Info, None);
-        let b = match_host(&h, &new, 0, Severity::Info, None);
+        let a = match_host(&h, &old, &load(None), 0, Severity::Info);
+        let b = match_host(&h, &new, &load(None), 0, Severity::Info);
         assert!(a.iter().any(|f| f.id == "CVE-2021-41773"));
         assert!(!b.iter().any(|f| f.id == "CVE-2021-41773"));
     }

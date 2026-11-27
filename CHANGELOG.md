@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.2
+
+Performance pass:
+
+- One TCP connection per port: the liveness socket now carries the banner probe
+  instead of opening a second connection (halves handshakes).
+- Connect timeout capped at 400 ms while banner reads keep the full `--timeout`.
+- Liveness reduced to 4 probes with a 200 ms cap; mDNS and SSDP discovery run in parallel.
+- CVE and credential databases are parsed once per scan and shared by all workers
+  instead of being re-read and re-parsed for every host and every probe.
+- SNMP limited to the two common communities with short, single-shot requests;
+  HTTP/Telnet/FTP/RTSP credential attempts are individually time-capped.
+- Custom ports get an HTTP probe, so non-standard web interfaces are detected.
+
 ## 0.6.1
 
 - Fixed: liveness probe now includes custom ports, so non-standard IoT devices are no longer skipped.

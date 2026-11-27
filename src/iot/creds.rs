@@ -19,7 +19,7 @@ struct CredSet {
 }
 
 #[derive(Clone, Debug, Default)]
-struct CredDb {
+pub struct CredDb {
     generic: CredSet,
     vendors: BTreeMap<String, CredSet>,
     snmp: Vec<String>,
@@ -76,7 +76,7 @@ fn decode(data: &str) -> Option<CredDb> {
     })
 }
 
-fn load(explicit: Option<&str>) -> CredDb {
+pub fn load(explicit: Option<&str>) -> CredDb {
     let mut candidates: Vec<String> = Vec::new();
     if let Some(p) = explicit {
         candidates.push(p.to_string());
@@ -151,8 +151,7 @@ fn select(db: &CredDb, protocol: &str, vendor: &str, limit: usize) -> Vec<(Strin
     out
 }
 
-pub fn snmp_communities(explicit: Option<&str>) -> Vec<String> {
-    let db = load(explicit);
+pub fn snmp_communities(db: &CredDb) -> Vec<String> {
     if db.snmp.is_empty() {
         vec![
             "public".into(),
@@ -161,7 +160,7 @@ pub fn snmp_communities(explicit: Option<&str>) -> Vec<String> {
             "monitor".into(),
         ]
     } else {
-        db.snmp
+        db.snmp.clone()
     }
 }
 
@@ -191,14 +190,13 @@ pub fn http_default_creds(
     timeout_ms: u64,
     vendor: &str,
     limit: usize,
-    explicit_db: Option<&str>,
+    db: &CredDb,
 ) -> Vec<Finding> {
-    let db = load(explicit_db);
-    let pairs = select(&db, "http", vendor, limit);
+    let pairs = select(db, "http", vendor, limit);
     if pairs.is_empty() {
         return Vec::new();
     }
-    let to = timeout_ms.max(100);
+    let to = timeout_ms.max(100).min(300);
     let initial = match http::request(ip, port, &HttpRequest::get("/"), to) {
         Some(r) => r,
         None => return Vec::new(),
@@ -498,11 +496,10 @@ pub fn telnet_default_creds(
     timeout_ms: u64,
     vendor: &str,
     limit: usize,
-    explicit_db: Option<&str>,
+    db: &CredDb,
 ) -> Vec<Finding> {
-    let db = load(explicit_db);
-    let pairs = select(&db, "telnet", vendor, limit);
-    let to = timeout_ms.max(150).min(900);
+    let pairs = select(db, "telnet", vendor, limit);
+    let to = timeout_ms.max(150).min(300);
     for (user, pass) in &pairs {
         if telnet_attempt(ip, port, to, user, pass) {
             return vec![found(
@@ -568,11 +565,10 @@ pub fn ftp_default_creds(
     timeout_ms: u64,
     vendor: &str,
     limit: usize,
-    explicit_db: Option<&str>,
+    db: &CredDb,
 ) -> Vec<Finding> {
-    let db = load(explicit_db);
-    let pairs = select(&db, "ftp", vendor, limit);
-    let to = timeout_ms.max(150).min(1200);
+    let pairs = select(db, "ftp", vendor, limit);
+    let to = timeout_ms.max(150).min(400);
     for (user, pass) in &pairs {
         if let Some(id) = ftp_attempt(ip, port, to, user, pass) {
             let sev = if id == "FTP_ANONYMOUS" {
@@ -594,14 +590,13 @@ pub fn rtsp_default_creds(
     timeout_ms: u64,
     vendor: &str,
     limit: usize,
-    explicit_db: Option<&str>,
+    db: &CredDb,
 ) -> Vec<Finding> {
-    let db = load(explicit_db);
-    let pairs = select(&db, "rtsp", vendor, limit);
+    let pairs = select(db, "rtsp", vendor, limit);
     if pairs.is_empty() {
         return Vec::new();
     }
-    let to = timeout_ms.max(100);
+    let to = timeout_ms.max(100).min(300);
     let path = format!("rtsp://{}:{}/", ip, port);
     let initial = match protocols::rtsp_request(ip, port, "OPTIONS", &path, None, to) {
         Some(r) => r,
@@ -685,7 +680,7 @@ mod tests {
             600,
             "NoSuchVendor",
             3,
-            None,
+            &load(None),
         );
         server.join().unwrap();
         assert_eq!(findings.len(), 1);

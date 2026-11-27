@@ -1,4 +1,4 @@
-use crate::net::http::{self, HttpRequest};
+use crate::net::http;
 use crate::types::PortResult;
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
@@ -73,6 +73,12 @@ pub fn parse_ports(s: &str) -> Option<Vec<u16>> {
     }
 }
 
+/// Connect probes are capped independently of banner reads: a filtered port
+/// fails fast, while a chatty device still gets the full read timeout.
+fn connect_ms(timeout_ms: u64) -> u64 {
+    timeout_ms.min(400).max(50)
+}
+
 pub fn scan_port(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> PortResult {
     let mut res = PortResult {
         port,
@@ -84,16 +90,19 @@ pub fn scan_port(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> PortResult {
         title: None,
     };
     let addr = SocketAddr::new(std::net::IpAddr::V4(ip), port);
-    let to = Duration::from_millis(timeout_ms.max(50));
-    if TcpStream::connect_timeout(&addr, to).is_err() {
-        return res;
-    }
+    let connect = Duration::from_millis(connect_ms(timeout_ms));
+    let read = Duration::from_millis(timeout_ms.max(50));
+    // One connection does both the liveness check and the banner grab.
+    let mut stream = match TcpStream::connect_timeout(&addr, connect) {
+        Ok(s) => s,
+        Err(_) => return res,
+    };
     res.open = true;
+    let _ = stream.set_read_timeout(Some(read));
+    let _ = stream.set_write_timeout(Some(read));
 
     if is_http(port) {
-        // The liveness socket is closed before probing: single-threaded embedded
-        // servers would otherwise wait on it and never answer a second connection.
-        if let Some((banner, server, title)) = http_probe(ip, port, timeout_ms) {
+        if let Some((banner, server, title)) = http_probe(&mut stream, ip, port) {
             res.banner = Some(banner);
             res.server = server;
             res.title = title;
@@ -104,13 +113,8 @@ pub fn scan_port(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> PortResult {
         return res;
     }
 
-    let mut stream = match TcpStream::connect_timeout(&addr, to) {
-        Ok(s) => s,
-        Err(_) => return res,
-    };
-    let _ = stream.set_read_timeout(Some(to));
+    let mut buf = [0u8; 512];
     if matches!(port, 21 | 22 | 25 | 23 | 2323 | 110 | 143 | 587 | 994) {
-        let mut buf = [0u8; 512];
         if let Ok(n) = stream.read(&mut buf) {
             if n > 0 {
                 let s = String::from_utf8_lossy(&buf[..n]).trim().to_string();
@@ -125,7 +129,6 @@ pub fn scan_port(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> PortResult {
             ip, port
         );
         let _ = stream.write_all(req.as_bytes());
-        let mut buf = [0u8; 512];
         if let Ok(n) = stream.read(&mut buf) {
             if n > 0 {
                 res.banner = Some(
@@ -137,17 +140,29 @@ pub fn scan_port(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> PortResult {
                 );
             }
         }
+    } else if let Some((banner, server, title)) = http_probe(&mut stream, ip, port) {
+        // Custom IoT ports often speak HTTP but are absent from the built-in list.
+        res.service = Some("http".into());
+        res.banner = Some(banner);
+        res.server = server;
+        res.title = title;
     }
     res
 }
 
 fn http_probe(
+    stream: &mut TcpStream,
     ip: Ipv4Addr,
     port: u16,
-    timeout_ms: u64,
 ) -> Option<(String, Option<String>, Option<String>)> {
-    let req = HttpRequest::get("/");
-    let resp = http::request(ip, port, &req, timeout_ms)?;
+    let req = format!(
+        "GET / HTTP/1.0\r\nHost: {}:{}\r\nUser-Agent: boggy/{}\r\nConnection: close\r\n\r\n",
+        ip,
+        port,
+        env!("CARGO_PKG_VERSION")
+    );
+    stream.write_all(req.as_bytes()).ok()?;
+    let resp = http::read_response(stream, 24 * 1024)?;
     let server = resp.header("server").map(|s| s.to_string());
     let powered = resp.header("x-powered-by").map(|s| s.to_string());
     let auth = resp.header("www-authenticate").map(|s| s.to_string());
@@ -311,6 +326,13 @@ fn guess_service(port: u16) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connect_timeout_is_capped() {
+        assert_eq!(connect_ms(800), 400);
+        assert_eq!(connect_ms(120), 120);
+        assert_eq!(connect_ms(0), 50);
+    }
 
     #[test]
     fn port_lists() {

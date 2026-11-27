@@ -116,9 +116,15 @@ pub fn raw_request(
     buf.extend_from_slice(body);
     stream.write_all(&buf).ok()?;
 
+    read_response(&mut stream, MAX_RESPONSE)
+}
+
+/// Read a response from an already connected socket. Lets the port scanner reuse
+/// its liveness connection instead of opening a second one for every banner.
+pub fn read_response(stream: &mut TcpStream, limit: usize) -> Option<HttpResponse> {
     let mut data = Vec::new();
     let mut tmp = [0u8; 4096];
-    while data.len() < MAX_RESPONSE {
+    while data.len() < limit {
         match stream.read(&mut tmp) {
             Ok(0) => break,
             Ok(n) => data.extend_from_slice(&tmp[..n]),
@@ -128,7 +134,7 @@ pub fn raw_request(
     parse_response(&data)
 }
 
-fn parse_response(data: &[u8]) -> Option<HttpResponse> {
+pub fn parse_response(data: &[u8]) -> Option<HttpResponse> {
     let sep = find(data, b"\r\n\r\n")?;
     let head = String::from_utf8_lossy(&data[..sep]);
     let mut lines = head.lines();

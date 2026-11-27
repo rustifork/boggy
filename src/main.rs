@@ -72,15 +72,17 @@ fn scan_host(
     sem: &Arc<Semaphore>,
     passive: bool,
     cred_limit: usize,
+    cve_db: &[cve::CveEntry],
+    cred_db: &dc::CredDb,
 ) -> Option<HostResult> {
     let discovered = mdns.contains_key(&ip) || ssdp.contains_key(&ip) || arp.contains_key(&ip);
     if passive && !discovered {
         return None;
     }
     if !discovered && !passive {
-        let mut probes: Vec<u16> = vec![80, 443, 22, 23, 445, 554, 8080, 8000, 8443, 1883];
+        let mut probes: Vec<u16> = vec![80, 443, 22, 554];
         if let Some(custom) = custom_ports {
-            probes.extend(custom.iter().take(16));
+            probes.extend(custom.iter().take(8));
         }
         probes.sort_unstable();
         probes.dedup();
@@ -208,7 +210,7 @@ fn scan_host(
                     opts.timeout,
                     vendor_name,
                     cred_limit,
-                    opts.creds_file.as_deref(),
+                    cred_db,
                 );
                 sem.release();
                 findings.extend(found);
@@ -224,7 +226,7 @@ fn scan_host(
                     opts.timeout,
                     vendor_name,
                     cred_limit,
-                    opts.creds_file.as_deref(),
+                    cred_db,
                 ));
                 sem.release();
             }
@@ -236,7 +238,7 @@ fn scan_host(
                     opts.timeout,
                     vendor_name,
                     cred_limit,
-                    opts.creds_file.as_deref(),
+                    cred_db,
                 ));
                 sem.release();
             }
@@ -248,7 +250,7 @@ fn scan_host(
                     opts.timeout,
                     vendor_name,
                     cred_limit,
-                    opts.creds_file.as_deref(),
+                    cred_db,
                 ));
                 findings.extend(protocols::rtsp_probe(ip, pr.port, opts.timeout));
                 sem.release();
@@ -287,14 +289,14 @@ fn scan_host(
 
         // UDP services do not appear in the TCP port list.
         sem.acquire();
-        let snmp_limit = if opts.no_creds { 0 } else { 6 };
-        for community in dc::snmp_communities(opts.creds_file.as_deref())
-            .iter()
-            .take(snmp_limit)
-        {
-            if let Some(f) = protocols::snmp_probe(ip, community, opts.timeout) {
-                findings.push(f);
-                break;
+        let snmp_limit = if opts.no_creds { 0 } else { 2 };
+        for community in dc::snmp_communities(cred_db).iter().take(snmp_limit) {
+            match protocols::snmp_probe(ip, community, opts.timeout) {
+                Some(f) => {
+                    findings.push(f);
+                    break;
+                }
+                None => break, // no agent answered the common community
             }
         }
         if let Some(f) = protocols::coap_probe(ip, 5683, opts.timeout) {
@@ -317,9 +319,9 @@ fn scan_host(
             findings.extend(cve::match_host(
                 &stub,
                 &port_results,
+                cve_db,
                 opts.max_cve,
                 Severity::parse(&opts.min_severity),
-                opts.cve_file.as_deref(),
             ));
         }
         findings.extend(cve::weak_services(
@@ -639,8 +641,10 @@ fn main() {
     };
 
     let discovery_ms = opts.timeout.max(1500);
-    let mdns_entries = discover::mdns_scan(discovery_ms);
+    // mDNS and SSDP both wait for multicast replies; run them concurrently.
+    let mdns_handle = thread::spawn(move || discover::mdns_scan(discovery_ms));
     let ssdp_entries = discover::ssdp_scan(discovery_ms);
+    let mdns_entries = mdns_handle.join().unwrap_or_default();
 
     if opts.max_hosts > 0 {
         let projected: usize = subnets.iter().map(Subnet::host_count).sum();
@@ -714,6 +718,9 @@ fn main() {
         opts.rate_limit
     };
     let sem = Arc::new(Semaphore::new(rate));
+    // Parsing the 500 KB CVE database once per host was the dominant CPU cost.
+    let cve_db = Arc::new(cve::load(opts.cve_file.as_deref()));
+    let cred_db = Arc::new(dc::load(opts.creds_file.as_deref()));
     let cred_limit = if opts.fast {
         opts.cred_limit.min(8)
     } else {
@@ -739,6 +746,8 @@ fn main() {
         let ssdp = ssdp_arc.clone();
         let arp = arp_arc.clone();
         let sem = sem.clone();
+        let cve_db = cve_db.clone();
+        let cred_db = cred_db.clone();
         let verbose = opts.verbose;
         handles.push(thread::spawn(move || loop {
             let ip = {
@@ -757,6 +766,8 @@ fn main() {
                         &sem,
                         opts.passive,
                         cred_limit,
+                        &cve_db,
+                        &cred_db,
                     ) {
                         if verbose {
                             eprintln!(

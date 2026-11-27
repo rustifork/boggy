@@ -150,26 +150,24 @@ fn snmp_sysdescr(data: &[u8]) -> Option<String> {
 
 pub fn snmp_probe(ip: Ipv4Addr, community: &str, timeout_ms: u64) -> Option<Finding> {
     let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
-    let to = Duration::from_millis(timeout_ms.max(200));
+    let to = Duration::from_millis(timeout_ms.min(250).max(80));
     let _ = sock.set_read_timeout(Some(to));
     let mut buf = [0u8; 2048];
     for version in [1u8, 0u8] {
         let packet = get_request(community, version);
-        for _ in 0..2 {
-            if sock.send_to(&packet, (ip, 161u16)).is_err() {
-                return None;
-            }
-            if let Ok((n, _)) = sock.recv_from(&mut buf) {
-                if let Some(descr) = snmp_sysdescr(&buf[..n]) {
-                    let mut out = f(
-                        "SNMP_DEFAULT_COMMUNITY",
-                        "high",
-                        "SNMP agent accepts a default community string",
-                        format!("community '{}' on {}:161 - {}", community, ip, descr),
-                    );
-                    out.confidence = Some("high".into());
-                    return Some(out);
-                }
+        if sock.send_to(&packet, (ip, 161u16)).is_err() {
+            return None;
+        }
+        if let Ok((n, _)) = sock.recv_from(&mut buf) {
+            if let Some(descr) = snmp_sysdescr(&buf[..n]) {
+                let mut out = f(
+                    "SNMP_DEFAULT_COMMUNITY",
+                    "high",
+                    "SNMP agent accepts a default community string",
+                    format!("community '{}' on {}:161 - {}", community, ip, descr),
+                );
+                out.confidence = Some("high".into());
+                return Some(out);
             }
         }
     }

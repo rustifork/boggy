@@ -23,6 +23,8 @@ Modules:
 
 Concurrency: worker pool over hosts, ports scanned sequentially per host, with a
 counting semaphore capping simultaneous sockets. UDP probes are issued once per host.
+Both JSON databases are parsed once per scan and shared by all workers; the liveness
+socket is reused for the banner grab, and mDNS/SSDP discovery run concurrently.
 
 Matching: CVE entries combine banner keywords, open ports, device classes and optional
 `affected` version bounds. Findings are de-duplicated by id, sorted by CVSS, capped per
