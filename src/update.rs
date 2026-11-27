@@ -165,6 +165,92 @@ pub fn fetch_bytes(url: &str, max_bytes: usize, allow_http: bool) -> Result<Vec<
     }
 }
 
+const ASSET_HOSTS: &[&str] = &[
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "api.github.com",
+    "raw.githubusercontent.com",
+];
+
+fn redirect_target(location: &str, current: &str, allow_http: bool) -> Result<String, String> {
+    let url = if location.starts_with('/') {
+        let scheme_end = current.find("://").ok_or("malformed current URL")? + 3;
+        let host_end = current[scheme_end..]
+            .find('/')
+            .map(|i| scheme_end + i)
+            .unwrap_or(current.len());
+        format!("{}{}", &current[..host_end], location)
+    } else {
+        location.to_string()
+    };
+    checked_url(&url, allow_http)?;
+    let host = url
+        .split("://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|h| h.split(':').next())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !ASSET_HOSTS.contains(&host.as_str()) {
+        return Err(format!("refusing redirect to untrusted host {}", host));
+    }
+    Ok(url)
+}
+
+/// Release assets live on GitHub's object storage behind a redirect. Follow only
+/// HTTPS redirects to GitHub-owned hosts, never forward credentials.
+pub fn fetch_asset(url: &str, max_bytes: usize, allow_http: bool) -> Result<Vec<u8>, String> {
+    let mut current = url.to_string();
+    for _ in 0..4 {
+        match fetch_asset_hop(&current, max_bytes, allow_http)? {
+            Fetched::Bytes(bytes) => return Ok(bytes),
+            Fetched::Redirect(next) => current = next,
+        }
+    }
+    Err("too many asset redirects".into())
+}
+
+enum Fetched {
+    Bytes(Vec<u8>),
+    Redirect(String),
+}
+
+#[cfg(feature = "https")]
+fn fetch_asset_hop(url: &str, max_bytes: usize, allow_http: bool) -> Result<Fetched, String> {
+    let agent = ureq::builder()
+        .timeout(Duration::from_secs(60))
+        .redirects(0)
+        .user_agent("boggy-update/0.3")
+        .build();
+    let resp = agent.get(url).call().map_err(|e| e.to_string())?;
+    if (300..400).contains(&resp.status()) {
+        let location = resp
+            .header("Location")
+            .ok_or_else(|| format!("redirect from {} has no Location", url))?;
+        return Ok(Fetched::Redirect(redirect_target(
+            location, url, allow_http,
+        )?));
+    }
+    if !(200..300).contains(&resp.status()) {
+        return Err(format!("GET {} returned HTTP {}", url, resp.status()));
+    }
+    let mut out = Vec::new();
+    resp.into_reader()
+        .take(max_bytes as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| e.to_string())?;
+    if out.len() > max_bytes {
+        return Err(format!("{} exceeds the {} byte limit", url, max_bytes));
+    }
+    Ok(Fetched::Bytes(out))
+}
+
+#[cfg(not(feature = "https"))]
+fn fetch_asset_hop(url: &str, max_bytes: usize, allow_http: bool) -> Result<Vec<u8>, Fetched> {
+    fetch_bytes(url, max_bytes, allow_http).map(Fetched::Bytes)
+}
+
 fn safe_file_name(name: &str) -> Result<&str, String> {
     if name.is_empty()
         || name.contains('/')
@@ -575,7 +661,7 @@ fn checksums_asset(release: &Release, name: &str, allow_http: bool) -> Result<St
         .iter()
         .find(|a| a.name == "SHA256SUMS" || a.name == "checksums.txt")
         .ok_or_else(|| format!("release has no SHA256SUMS asset for {}", name))?;
-    let bytes = fetch_bytes(&sums.browser_download_url, 64 * 1024, allow_http)?;
+    let bytes = fetch_asset(&sums.browser_download_url, 64 * 1024, allow_http)?;
     let text = String::from_utf8_lossy(&bytes);
     for line in text.lines() {
         let mut parts = line.split_whitespace();
@@ -607,7 +693,7 @@ pub fn self_update(allow_http: bool) -> Result<String, String> {
     if asset.size > MAX_BINARY_BYTES {
         return Err(format!("asset {} is too large: {} bytes", name, asset.size));
     }
-    let bytes = fetch_bytes(&asset.browser_download_url, MAX_BINARY_BYTES, allow_http)?;
+    let bytes = fetch_asset(&asset.browser_download_url, MAX_BINARY_BYTES, allow_http)?;
     if !bytes.starts_with(&[0x7f, b'E', b'L', b'F']) {
         return Err("downloaded asset is not an ELF binary".into());
     }
