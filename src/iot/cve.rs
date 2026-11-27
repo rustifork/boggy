@@ -1,21 +1,52 @@
-use crate::types::{Finding, HostResult, PortResult};
+//! CVE and weak-configuration matching. The database is data-driven: entries can
+//! require a banner keyword, an open port, a device class, or an affected version.
+
+use crate::iot::fingerprints::{version_lt, versions};
+use crate::types::{Finding, HostResult, PortResult, Severity};
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
+struct Affected {
+    product: String,
+    below: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 struct CveEntry {
     id: String,
     cve: Option<String>,
     severity: String,
     title: String,
     detail: String,
+    #[serde(default)]
+    cvss: Option<f32>,
+    #[serde(default)]
+    vendor: Option<String>,
+    #[serde(default)]
+    product: Option<String>,
+    #[serde(default)]
     ports: Option<Vec<u16>>,
+    #[serde(default)]
     keywords: Option<Vec<String>>,
+    #[serde(default)]
+    all_keywords: Option<Vec<String>>,
+    #[serde(default)]
+    exclude_keywords: Option<Vec<String>>,
+    #[serde(default)]
+    device_types: Option<Vec<String>>,
+    #[serde(default)]
+    affected: Option<Vec<Affected>>,
+    #[serde(default)]
+    reference: Option<String>,
 }
 
 static CVE_DB: &str = include_str!("../../db/cves.json");
 
-fn load() -> Vec<CveEntry> {
+fn load(explicit: Option<&str>) -> Vec<CveEntry> {
     let mut candidates: Vec<String> = Vec::new();
+    if let Some(p) = explicit {
+        candidates.push(p.to_string());
+    }
     if let Ok(home) = std::env::var("HOME") {
         candidates.push(format!("{}/.boggy/cves.json", home));
     }
@@ -31,58 +62,321 @@ fn load() -> Vec<CveEntry> {
     serde_json::from_str(CVE_DB).unwrap_or_default()
 }
 
-pub fn match_host(host: &HostResult, ports: &[PortResult]) -> Vec<Finding> {
-    let mut findings = Vec::new();
-    let db = load();
-    let banners: String = ports.iter().filter_map(|p| p.banner.clone()).collect::<Vec<_>>().join(" ").to_lowercase();
-    let open_ports: Vec<u16> = ports.iter().filter(|p| p.open).map(|p| p.port).collect();
-    for e in db {
-        let has_kw = e.keywords.as_ref().map(|k| !k.is_empty()).unwrap_or(false);
-        let kw_hit = e.keywords.as_ref().map(|k| k.iter().any(|kk| banners.contains(&kk.to_lowercase()))).unwrap_or(false);
-        let port_hit = e.ports.as_ref().map(|ps| ps.iter().any(|p| open_ports.contains(p))).unwrap_or(false);
-        let hit = if has_kw {
-            kw_hit && (e.ports.is_none() || port_hit)
-        } else {
-            port_hit
-        };
-        if e.ports.is_none() && e.keywords.is_none() { continue; }
-        if hit {
-            findings.push(Finding {
-                id: e.id.clone(),
-                severity: e.severity.clone(),
-                title: e.title.clone(),
-                detail: e.detail.clone(),
-                cve: e.cve.clone(),
-            });
-        }
-    }
-    // weak services
+fn fingerprint_text(host: &HostResult, ports: &[PortResult]) -> String {
+    let mut parts: Vec<String> = Vec::new();
     for p in ports {
-        if !p.open { continue; }
-        let f = match p.port {
-            23 | 2323 => Some(("TELNET", "high", "Telnet cleartext management interface")),
-            6379 => Some(("REDIS", "critical", "Redis exposed without authentication likely")),
-            9200 | 9300 => Some(("ELASTICSEARCH", "high", "Elasticsearch HTTP API exposed")),
-            27017 => Some(("MONGODB", "high", "MongoDB exposed")),
-            5984 => Some(("COUCHDB", "high", "CouchDB exposed")),
-            11211 => Some(("MEMCACHED", "medium", "Memcached exposed")),
-            2375 => Some(("DOCKER", "critical", "Docker daemon unauthenticated")),
-            2376 => Some(("DOCKER_TLS", "medium", "Docker TLS endpoint exposed")),
-            445 => Some(("SMB", "medium", "SMB service exposed")),
-            5900 => Some(("VNC", "high", "VNC remote desktop exposed")),
-            3389 => Some(("RDP", "medium", "RDP exposed")),
-            _ => None,
-        };
-        if let Some((id, sev, title)) = f {
-            findings.push(Finding {
-                id: id.to_string(),
-                severity: sev.to_string(),
-                title: title.to_string(),
-                detail: format!("port {}", p.port),
-                cve: None,
-            });
+        if let Some(b) = &p.banner {
+            parts.push(b.clone());
+        }
+        if let Some(s) = &p.server {
+            parts.push(s.clone());
+        }
+        if let Some(t) = &p.title {
+            parts.push(t.clone());
+        }
+        if let Some(s) = &p.service {
+            parts.push(s.clone());
         }
     }
-    let _ = host;
+    for value in [
+        host.hostname.clone(),
+        host.vendor.clone(),
+        host.model.clone(),
+        host.device_type.clone(),
+    ] {
+        if let Some(v) = value {
+            parts.push(v);
+        }
+    }
+    parts.extend(host.protocols.clone());
+    parts.join(" ").to_ascii_lowercase()
+}
+
+fn contains_any(text: &str, words: &[String]) -> bool {
+    words.iter().any(|w| {
+        let w = w.trim().to_ascii_lowercase();
+        !w.is_empty() && text.contains(&w)
+    })
+}
+
+pub fn match_host(
+    host: &HostResult,
+    ports: &[PortResult],
+    limit: usize,
+    min_severity: Severity,
+    explicit_db: Option<&str>,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let db = load(explicit_db);
+    let text = fingerprint_text(host, ports);
+    let open_ports: Vec<u16> = ports.iter().filter(|p| p.open).map(|p| p.port).collect();
+    let hints = versions(&text);
+    let host_vendor = host.vendor.as_deref().unwrap_or("").to_ascii_lowercase();
+
+    for e in db {
+        let severity = Severity::parse(&e.severity);
+        if severity < min_severity {
+            continue;
+        }
+        if let Some(words) = &e.exclude_keywords {
+            if contains_any(&text, words) {
+                continue;
+            }
+        }
+
+        let mut confidence = "medium";
+        let mut matched = false;
+
+        if let Some(affected) = &e.affected {
+            for a in affected {
+                let product = a.product.to_ascii_lowercase();
+                if hints
+                    .iter()
+                    .any(|(p, v)| *p == product && version_lt(v, &a.below))
+                {
+                    matched = true;
+                    confidence = "high";
+                    break;
+                }
+            }
+        } else {
+            let mut kw_hit = e
+                .keywords
+                .as_ref()
+                .map(|k| contains_any(&text, k))
+                .unwrap_or(false);
+            if !kw_hit {
+                if let Some(product) = &e.product {
+                    kw_hit = text.contains(&product.to_ascii_lowercase());
+                }
+            }
+            let all_hit = e
+                .all_keywords
+                .as_ref()
+                .map(|k| !k.is_empty() && k.iter().all(|w| text.contains(&w.to_ascii_lowercase())))
+                .unwrap_or(true);
+            let port_hit = e
+                .ports
+                .as_ref()
+                .map(|ps| ps.iter().any(|p| open_ports.contains(p)))
+                .unwrap_or(false);
+            let type_hit = e
+                .device_types
+                .as_ref()
+                .map(|types| {
+                    types.iter().any(|t| {
+                        text.contains(&t.to_ascii_lowercase())
+                            || host
+                                .device_type
+                                .as_deref()
+                                .map(|d| d.to_ascii_lowercase().contains(&t.to_ascii_lowercase()))
+                                .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+
+            let has_signal = e.keywords.is_some() || e.ports.is_some() || e.device_types.is_some();
+            if has_signal && all_hit {
+                if e.ports.is_none() && e.keywords.is_none() {
+                    // Device-class-only entries must be gated by the class.
+                    matched = type_hit;
+                } else {
+                    matched = (e.keywords.is_none() || kw_hit) && (e.ports.is_none() || port_hit);
+                }
+                if matched {
+                    let vendor_match = e
+                        .vendor
+                        .as_ref()
+                        .map(|v| {
+                            let v = v.to_ascii_lowercase();
+                            !host_vendor.is_empty()
+                                && (text.contains(&v) || host_vendor.contains(&v))
+                        })
+                        .unwrap_or(false);
+                    confidence = if kw_hit && port_hit && (vendor_match || type_hit) {
+                        "high"
+                    } else {
+                        "medium"
+                    };
+                }
+            }
+        }
+
+        if matched {
+            let mut finding = Finding::new(&e.id, &e.severity, &e.title, e.detail.clone());
+            finding.cve = e.cve.clone();
+            finding.cvss = e.cvss;
+            finding.confidence = Some(confidence.into());
+            finding.reference = e.reference.clone();
+            findings.push(finding);
+        }
+    }
+
+    findings.sort_by(|a, b| {
+        b.cvss
+            .unwrap_or(0.0)
+            .partial_cmp(&a.cvss.unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.rank().cmp(&a.rank()))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    if limit > 0 && findings.len() > limit {
+        findings.truncate(limit);
+    }
     findings
+}
+
+/// Findings derived from an exposed port alone, independent of any CVE database.
+pub fn weak_services(ports: &[PortResult], min_severity: Severity) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let table: &[(u16, &str, &str, &str)] = &[
+        (
+            21,
+            "FTP_PLAINTEXT",
+            "low",
+            "FTP control channel exposed (cleartext)",
+        ),
+        (
+            23,
+            "TELNET_PLAINTEXT",
+            "high",
+            "Telnet exposed (cleartext management)",
+        ),
+        (
+            2323,
+            "TELNET_PLAINTEXT",
+            "high",
+            "Telnet exposed (cleartext management)",
+        ),
+        (161, "SNMP_EXPOSED", "medium", "SNMP agent exposed"),
+        (502, "MODBUS_EXPOSED", "high", "Modbus/TCP exposed"),
+        (1883, "MQTT_EXPOSED", "high", "MQTT broker exposed"),
+        (1900, "UPNP_EXPOSED", "medium", "UPnP SSDP exposed"),
+        (2375, "DOCKER_EXPOSED", "critical", "Docker API exposed"),
+        (2376, "DOCKER_TLS", "medium", "Docker TLS endpoint exposed"),
+        (
+            2404,
+            "IEC104_EXPOSED",
+            "high",
+            "IEC 60870-5-104 control channel exposed",
+        ),
+        (445, "SMB_EXPOSED", "medium", "SMB service exposed"),
+        (44818, "ETHERNET_IP_EXPOSED", "high", "EtherNet/IP exposed"),
+        (47808, "BACNET_EXPOSED", "high", "BACnet exposed"),
+        (554, "RTSP_EXPOSED", "medium", "RTSP exposed"),
+        (5683, "COAP_EXPOSED", "medium", "CoAP endpoint exposed"),
+        (5900, "VNC_EXPOSED", "high", "VNC remote desktop exposed"),
+        (5984, "COUCHDB_EXPOSED", "high", "CouchDB exposed"),
+        (6379, "REDIS_EXPOSED", "critical", "Redis exposed"),
+        (7547, "TR069_EXPOSED", "medium", "TR-069/CWMP exposed"),
+        (8554, "RTSP_EXPOSED", "medium", "RTSP exposed"),
+        (9200, "ELASTIC_EXPOSED", "high", "Elasticsearch API exposed"),
+        (
+            9300,
+            "ELASTIC_EXPOSED",
+            "high",
+            "Elasticsearch transport exposed",
+        ),
+        (11211, "MEMCACHED_EXPOSED", "high", "Memcached exposed"),
+        (27017, "MONGODB_EXPOSED", "critical", "MongoDB exposed"),
+        (3389, "RDP_EXPOSED", "medium", "RDP exposed"),
+        (
+            5555,
+            "ADB_EXPOSED",
+            "critical",
+            "Android Debug Bridge exposed",
+        ),
+        (
+            49152,
+            "UPNP_EXPOSED",
+            "medium",
+            "UPnP SOAP endpoint exposed",
+        ),
+        (
+            52869,
+            "UPNP_EXPOSED",
+            "medium",
+            "UPnP SOAP endpoint exposed",
+        ),
+    ];
+    let mut seen = std::collections::HashSet::new();
+    for p in ports {
+        if !p.open {
+            continue;
+        }
+        for (port, id, sev, title) in table {
+            if *port == p.port && Severity::parse(sev) >= min_severity && seen.insert((*id, p.port))
+            {
+                out.push(Finding::new(id, sev, title, format!("port {}", p.port)));
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn host(vendor: &str, device: &str) -> HostResult {
+        HostResult {
+            ip: "192.168.1.10".parse().unwrap(),
+            hostname: None,
+            mac: None,
+            vendor: Some(vendor.into()),
+            model: None,
+            ports: vec![],
+            protocols: vec![],
+            device_type: Some(device.into()),
+            findings: vec![],
+        }
+    }
+
+    fn port(port: u16, banner: &str) -> PortResult {
+        PortResult {
+            port,
+            open: true,
+            service: None,
+            banner: Some(banner.into()),
+            tls: false,
+            server: None,
+            title: None,
+        }
+    }
+
+    #[test]
+    fn embedded_db_is_valid() {
+        let db: Vec<CveEntry> = serde_json::from_str(CVE_DB).unwrap();
+        assert!(!db.is_empty());
+        for e in &db {
+            assert!(!e.id.is_empty());
+            assert!(!e.title.is_empty());
+        }
+    }
+
+    #[test]
+    fn keyword_and_port_match() {
+        let h = host("Hikvision", "ip camera");
+        let ports = vec![port(80, "Hikvision-Webs 4.0")];
+        let findings = match_host(&h, &ports, 0, Severity::Info, None);
+        assert!(findings.iter().any(|f| f.id == "CVE-2021-36260"));
+    }
+
+    #[test]
+    fn version_constraint() {
+        let h = host("Apache", "web server");
+        let old = vec![port(80, "Apache/2.4.49 (Ubuntu)")];
+        let new = vec![port(80, "Apache/2.4.51 (Ubuntu)")];
+        let a = match_host(&h, &old, 0, Severity::Info, None);
+        let b = match_host(&h, &new, 0, Severity::Info, None);
+        assert!(a.iter().any(|f| f.id == "CVE-2021-41773"));
+        assert!(!b.iter().any(|f| f.id == "CVE-2021-41773"));
+    }
+
+    #[test]
+    fn weak_service_severity_filter() {
+        let ports = vec![port(23, "BusyBox")];
+        assert!(weak_services(&ports, Severity::High).len() == 1);
+        assert!(weak_services(&ports, Severity::Critical).is_empty());
+    }
 }
