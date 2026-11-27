@@ -89,7 +89,7 @@ impl HostResult {
             ),
             (
                 "protocols",
-                Json::arr(self.protocols.iter().map(|s| Json::str(s)).collect()),
+                Json::arr(self.protocols.iter().map(Json::str).collect()),
             ),
             ("device_type", Json::opt_str(self.device_type.as_deref())),
             (

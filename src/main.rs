@@ -289,14 +289,11 @@ fn scan_host(
 
         // UDP services do not appear in the TCP port list.
         sem.acquire();
-        let snmp_limit = if opts.no_creds { 0 } else { 2 };
-        for community in dc::snmp_communities(cred_db).iter().take(snmp_limit) {
-            match protocols::snmp_probe(ip, community, opts.timeout) {
-                Some(f) => {
+        if !opts.no_creds {
+            if let Some(community) = dc::snmp_communities(cred_db).into_iter().next() {
+                if let Some(f) = protocols::snmp_probe(ip, &community, opts.timeout) {
                     findings.push(f);
-                    break;
                 }
-                None => break, // no agent answered the common community
             }
         }
         if let Some(f) = protocols::coap_probe(ip, 5683, opts.timeout) {
@@ -806,9 +803,11 @@ fn main() {
     } else {
         opts.target.join(",")
     };
-    let mut summary = Summary::default();
-    summary.hosts = hosts.len();
-    summary.open_ports = hosts.iter().map(|h| h.ports.len()).sum();
+    let mut summary = Summary {
+        hosts: hosts.len(),
+        open_ports: hosts.iter().map(|h| h.ports.len()).sum(),
+        ..Summary::default()
+    };
     for h in &hosts {
         for f in &h.findings {
             summary.findings += 1;

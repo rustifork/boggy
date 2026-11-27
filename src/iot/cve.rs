@@ -130,27 +130,28 @@ pub fn load(explicit: Option<&str>) -> Vec<CveEntry> {
 fn fingerprint_text(host: &HostResult, ports: &[PortResult]) -> String {
     let mut parts: Vec<String> = Vec::new();
     for p in ports {
-        for value in [
+        for v in [
             p.banner.clone(),
             p.server.clone(),
             p.title.clone(),
             p.service.clone(),
-        ] {
-            if let Some(v) = value {
-                parts.push(v);
-            }
-        }
-    }
-    for value in [
-        host.hostname.clone(),
-        host.vendor.clone(),
-        host.model.clone(),
-        host.device_type.clone(),
-    ] {
-        if let Some(v) = value {
+        ]
+        .into_iter()
+        .flatten()
+        {
             parts.push(v);
         }
     }
+    parts.extend(
+        [
+            host.hostname.clone(),
+            host.vendor.clone(),
+            host.model.clone(),
+            host.device_type.clone(),
+        ]
+        .into_iter()
+        .flatten(),
+    );
     parts.extend(host.protocols.clone());
     parts.join(" ").to_ascii_lowercase()
 }

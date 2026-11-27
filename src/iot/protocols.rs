@@ -91,7 +91,7 @@ impl<'a> Ber<'a> {
         let mut len = self.buf[self.pos + 1] as usize;
         let mut head = 2;
         if len & 0x80 != 0 {
-            let n = (len & 0x7f) as usize;
+            let n = len & 0x7f;
             if n == 0 || n > 2 || self.pos + 2 + n > self.buf.len() {
                 return None;
             }
@@ -150,7 +150,7 @@ fn snmp_sysdescr(data: &[u8]) -> Option<String> {
 
 pub fn snmp_probe(ip: Ipv4Addr, community: &str, timeout_ms: u64) -> Option<Finding> {
     let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
-    let to = Duration::from_millis(timeout_ms.min(250).max(80));
+    let to = Duration::from_millis(timeout_ms.clamp(80, 250));
     let _ = sock.set_read_timeout(Some(to));
     let mut buf = [0u8; 2048];
     for version in [1u8, 0u8] {

@@ -76,7 +76,7 @@ pub fn parse_ports(s: &str) -> Option<Vec<u16>> {
 /// Connect probes are capped independently of banner reads: a filtered port
 /// fails fast, while a chatty device still gets the full read timeout.
 fn connect_ms(timeout_ms: u64) -> u64 {
-    timeout_ms.min(400).max(50)
+    timeout_ms.clamp(50, 400)
 }
 
 pub fn scan_port(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> PortResult {

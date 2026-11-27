@@ -196,7 +196,7 @@ pub fn http_default_creds(
     if pairs.is_empty() {
         return Vec::new();
     }
-    let to = timeout_ms.max(100).min(300);
+    let to = timeout_ms.clamp(100, 300);
     let initial = match http::request(ip, port, &HttpRequest::get("/"), to) {
         Some(r) => r,
         None => return Vec::new(),
@@ -499,7 +499,7 @@ pub fn telnet_default_creds(
     db: &CredDb,
 ) -> Vec<Finding> {
     let pairs = select(db, "telnet", vendor, limit);
-    let to = timeout_ms.max(150).min(300);
+    let to = timeout_ms.clamp(150, 300);
     for (user, pass) in &pairs {
         if telnet_attempt(ip, port, to, user, pass) {
             return vec![found(
@@ -568,7 +568,7 @@ pub fn ftp_default_creds(
     db: &CredDb,
 ) -> Vec<Finding> {
     let pairs = select(db, "ftp", vendor, limit);
-    let to = timeout_ms.max(150).min(400);
+    let to = timeout_ms.clamp(150, 400);
     for (user, pass) in &pairs {
         if let Some(id) = ftp_attempt(ip, port, to, user, pass) {
             let sev = if id == "FTP_ANONYMOUS" {
@@ -596,7 +596,7 @@ pub fn rtsp_default_creds(
     if pairs.is_empty() {
         return Vec::new();
     }
-    let to = timeout_ms.max(100).min(300);
+    let to = timeout_ms.clamp(100, 300);
     let path = format!("rtsp://{}:{}/", ip, port);
     let initial = match protocols::rtsp_request(ip, port, "OPTIONS", &path, None, to) {
         Some(r) => r,
