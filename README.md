@@ -1,155 +1,206 @@
 # boggy
 
-[![CI](https://github.com/rustifork/boggy/actions/workflows/ci.yml/badge.svg)](https://github.com/rustifork/boggy/actions/workflows/ci.yml)
+```
+ _     ___  ____  __  __
+| |   / _ \|  _ \|  \/  |
+| |  | | | | |_) | |\/| |
+| |__| |_| |  _ <| |  | |
+|____|\___/|_| \_\_|  |_|
+```
 
-Lightweight, agentless IoT network vulnerability scanner for Raspberry Pi and other small Linux devices. One ~1.2 MB binary, **zero external Rust crates**, no root privileges.
+[![CI](https://github.com/rustifork/boggy/actions/workflows/ci.yml/badge.svg)](https://github.com/rustifork/boggy/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/rustifork/boggy)](https://github.com/rustifork/boggy/releases)
+
+**Agentless IoT network scanner. One small binary, zero Rust dependencies, no root.**
 
 > Boggy is neither affiliated with, nor used by, nor made by the Iranian APT group Boggy Serpens.
 
-## Why boggy
+---
 
-- **Small**: ~1.23 MB release binary, embedded databases, `std`-only build that works offline.
-- **Quiet**: bounded worker pool and a socket semaphore; fragile IoT devices are not flooded.
-- **Data-driven**: 677 IoT/OT CVEs and 278 default credential pairs live in JSON, not in code.
-- **Verifiable updates**: SHA-256 pinned databases and release binaries, atomic writes.
+## At a glance
+
+| | |
+|---|---|
+| Binary size | ~1.2 MB, `std`-only, offline build |
+| Databases | 677 IoT/OT CVEs, 278 credential pairs |
+| Discovery | ARP, mDNS, SSDP/UPnP, TCP liveness |
+| Probes | HTTP Basic/Digest/forms, Telnet, FTP, MQTT, CoAP, SNMP, Redis, Modbus, Docker, ADB… |
+| Reports | text, JSON, JSONL, severity summary, CI exit codes |
+| Updates | `update` = source code (git), `update-db` = data, `self-update` = binary |
+| Tests | 41 unit + 9 end-to-end |
+
+**Contents:** [Quick start](#quick-start) · [Commands](#commands) · [Security](#security) · [Architecture](#architecture) · [Testing](#testing) · [Troubleshooting](#troubleshooting)
+
+---
 
 ## Quick start
 
 ```sh
-# Build (no crates are downloaded)
-cargo build --release
-
-# Scan the local subnet
-./target/release/boggy --auto
-
-# Or a specific network, with a JSON report
-./target/release/boggy --target 192.168.1.0/24 --output json --out report.json
+cargo build --release              # no crates are downloaded
+./target/release/boggy --auto      # scan the local /24
 ```
 
-Prebuilt x86_64 binaries are on the [releases page](https://github.com/rustifork/boggy/releases). After installing one, `boggy update --self` verifies and replaces it.
+Prefer JSON for CI:
 
-## Features
+```sh
+./target/release/boggy \
+  --target 192.168.1.0/24 \
+  --deep --output json --out report.json \
+  --min-severity high --fail-on critical
+```
 
-| Area | What it does |
-| --- | --- |
-| Discovery | ARP sweep, mDNS (6 service types), SSDP/UPnP (3 search targets), TCP liveness |
-| Ports | Fast / common / deep sets, custom ranges, banner grabbing |
-| Fingerprinting | 150+ vendor/device signatures; `Server`, `WWW-Authenticate`, page title, version extraction |
-| Credentials | HTTP Basic, Digest, login forms, Telnet, FTP, RTSP; vendor-aware pairs |
-| Protocol probes | MQTT, CoAP, SNMP, Redis, Memcached, Modbus, Docker, Elasticsearch, ADB, TR-069 |
-| UPnP | Manufacturer, model, firmware, IGD exposure |
-| Vulnerabilities | 677 CVEs with port, keyword, device-class and version gates; CVSS ranking |
-| Reporting | Text, JSON, JSONL; severity summary and CI exit codes |
+A prebuilt x86_64 binary is attached to every [release](https://github.com/rustifork/boggy/releases). Once installed, `boggy self-update` verifies and replaces it.
 
-## Scanning
+---
+
+## Commands
+
+Three update paths, deliberately separate:
+
+| Command | Updates | Source |
+|---|---|---|
+| `boggy update` | source code | `https://github.com/rustifork/boggy.git` via git |
+| `boggy update-db` | CVE + credential databases | `db/manifest.json` pinned HTTPS downloads |
+| `boggy self-update` | running binary | verified GitHub release asset |
+
+### Scan
 
 ```sh
 boggy --auto
 boggy --target 192.168.1.0/24 --exclude 192.168.1.50/32
-boggy --target 192.168.1.0/24 --fast
-boggy --target 192.168.1.0/24 --deep
+boggy --target 192.168.1.0/24 --fast          # 17 top IoT ports
+boggy --target 192.168.1.0/24 --deep          # ~170 ports, every probe
 boggy --target 192.168.1.0/24 --ports 22,80,443,8000-8100
-boggy --target 192.168.1.0/24 --passive
-boggy --target 192.168.1.0/24 --rate-limit 32 --timeout 500 -j 8
-boggy --target 192.168.1.0/24 --min-severity high --fail-on critical -v
+boggy --target 192.168.1.0/24 --passive       # discovery only
+boggy --target 192.168.1.0/24 -j 8 --rate-limit 32 --timeout 500
 ```
 
-`--fast` scans 17 top IoT ports, the default scans ~100, `--deep` scans ~170. `--passive` only reports devices discovered through mDNS/SSDP/ARP. `--cred-limit` (default 24) bounds credential attempts per service; `--max-cve` (default 15) bounds CVE findings per host; `--max-hosts` (default 65536) refuses oversized CIDR expansions before allocating them.
-
-### Options
-
 | Option | Meaning |
-| --- | --- |
+|---|---|
 | `-t, --target <CIDR>` | Target network, repeatable |
 | `--auto` | Detect the local /24 |
 | `--exclude <CIDR>` | Skip a network, repeatable |
-| `--fast` / `--deep` | Port-set selection |
-| `--ports <SPEC>` | `22,80,443,8000-8100` |
-| `--passive` | Discovery only |
+| `--fast` / `--deep` / `--ports <SPEC>` | Port selection |
+| `--passive` | No active probes |
 | `--no-creds` / `--no-cve` | Disable a probe family |
 | `-j, --threads <N>` | Workers (64) |
-| `--rate-limit <N>` | Max simultaneous sockets (auto) |
-| `--timeout <MS>` | Per-probe timeout (800) |
+| `--rate-limit <N>` | Max simultaneous sockets, 0 = auto |
+| `--timeout <MS>` | Per-probe timeout, default 800 |
+| `--cred-limit <N>` | Credential attempts per service, default 24 |
+| `--max-cve <N>` | CVE findings per host, default 15 |
+| `--max-hosts <N>` | Refuse larger CIDR expansions, default 65536 |
 | `--min-severity <S>` | `info\|low\|medium\|high\|critical` |
 | `--fail-on <S>` | Exit 2 when a finding reaches this severity |
-| `--output text\|json\|jsonl` | Report format |
-| `--out <FILE>` | Write to file |
+| `-o, --output <FMT>` | `text`, `json`, `jsonl` |
+| `--out <FILE>` | Write the report to a file |
 | `--cve-file` / `--creds-file` | Override databases |
 | `-v` | Progress on stderr |
 
-Exit codes: `0` clean, `1` usage/scan/update error, `2` `--fail-on` threshold reached.
+Exit codes: `0` clean · `1` usage/scan/update error · `2` `--fail-on` threshold reached.
 
-## Databases and updates
+### Update the source code
 
-| File | Contents | Local override |
-| --- | --- | --- |
-| `db/cves.json` | 677 CVEs and weak-config rules | `~/.boggy/cves.json` or `--cve-file` |
-| `db/creds.json` | 278 credential pairs + SNMP communities | `~/.boggy/creds.json` or `--creds-file` |
-| `db/manifest.json` | SHA-256 digests and entry counts | `~/.boggy/manifest.json` |
+`boggy update` uses git directly (no shell). In an existing checkout it fetches the tracked branch and fast-forwards via `reset --hard`; a dirty tree is refused unless `--force`. Outside a checkout it clones into `~/.boggy/src/boggy` or `--dir`.
 
 ```sh
-boggy update-db                    # both databases, verified
-boggy update-db --cves-only
-boggy update-db --creds-only
-boggy update-db --dry-run          # validate and print, write nothing
-boggy update                       # release check + database refresh
-boggy update --self                # verified binary self-update
-boggy update --check-only
-boggy update-check
-boggy db-info
-boggy selftest
+boggy update                                   # fetch + apply
+boggy update --dry-run                         # show the target commit only
+boggy update --build                           # build after updating
+boggy update --build --install                 # build and install to ~/.local/bin/boggy
+boggy update --dir ~/src/boggy --branch main
+boggy update --self                            # alias: verified binary self-update
+boggy update --check-only                      # alias: release version check
 ```
 
-`boggy selftest` runs 13 integrity and parser checks inside the binary, so a Pi with no cargo installed can still verify its installation. `boggy db-info` prints the embedded hashes and shows whether a local override is active.
+| Option | Meaning |
+|---|---|
+| `--dir <PATH>` | Working directory; defaults to the current repo or `~/.boggy/src/boggy` |
+| `--repo <URL>` | HTTPS GitHub repository |
+| `--branch <NAME>` | Branch to track, default `main` |
+| `--force` | Allow discarding local changes or overwriting a directory |
+| `--build` / `--install` | Compile / install the release binary |
+| `--install-path <P>` | Override the install destination |
+| `--allow-local` | Permit `file://` repositories for offline mirrors |
+| `--dry-run` | Print the commit and exit without touching files |
 
-## Security model
+### Update data and binary
 
-- HTTPS is required by default; `--allow-http` is an explicit opt-in for private mirrors.
-- `curl` (or `wget` as fallback) performs certificate validation; TLS 1.2 is the minimum. No TLS library is linked into the binary.
-- Redirects are disabled for database downloads. Release assets may redirect only to GitHub-controlled hosts.
-- Downloads are size-bounded (8 MB databases, 48 MB binary) and SHA-256 checked against `db/manifest.json` or the release digest / `SHA256SUMS`. Digests are compared in constant time.
-- Both databases are fetched and structurally validated before either destination is touched. Writes use a create-new temp file, `fsync` and atomic rename; databases are mode 0600, the binary 0755. Symlinks are never followed.
-- The in-tree JSON parser enforces depth, node, string and UTF-8 limits. Malformed input is rejected without panics.
-- `--max-hosts` and `--cred-limit` bound resource usage; a counting semaphore caps simultaneous sockets.
+```sh
+boggy update-db                       # both databases, SHA-256 verified
+boggy update-db --cves-only
+boggy update-db --creds-only
+boggy update-db --dry-run             # validate and print, write nothing
+boggy update-check                    # release version only
+boggy db-info                         # embedded hashes and active overrides
+boggy self-update                     # verified release binary
+boggy selftest                        # 13 integrity/parser checks
+```
 
-Out of scope: TLS inspection, active exploitation, version confirmation via authenticated scans, and zero-day discovery. A CVE match means "this device looks affected" — confirm with the vendor advisory or an authenticated scanner.
+---
+
+## Security
+
+- HTTPS by default; plain HTTP requires `--allow-http`. `curl` (or wget) validates certificates, TLS ≥ 1.2. No TLS library is linked into the binary.
+- Redirects are disabled for database downloads; release assets may redirect only to GitHub-controlled hosts.
+- SHA-256 digests from `db/manifest.json` (or the release `digest` / `SHA256SUMS`) are compared in constant time before any file is written.
+- Files are replaced atomically: create-new temp file, `fsync`, rename. Databases are 0600, binaries 0755, symlinks never followed.
+- The in-tree JSON parser enforces depth, node, string and UTF-8 limits. A malformed database never panics.
+- Git arguments are passed as an array, branch names and URLs are validated, and local changes cannot be silently discarded.
+
+**Out of scope:** TLS inspection, active exploitation, authenticated version confirmation, zero-day discovery. A CVE match means "this device looks affected" — confirm with the vendor advisory.
 
 Only scan networks you own or are authorized to test.
 
-## Building and testing
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Discovery<br/>ARP · mDNS · SSDP] --> B[Port scan<br/>banner + title]
+    B --> C[Fingerprint<br/>vendor · model · version]
+    C --> D[CVE + weak config<br/>677 entries]
+    C --> E[Credential + protocol probes]
+    D --> F[Report<br/>text · json · jsonl]
+    E --> F
+    G[(JSON databases)] --> D
+    G --> E
+    H[update · update-db · self-update] --> G
+```
+
+Everything lives in `src/`: `net` (discovery, ports, HTTP, MD5, SHA-256), `iot` (fingerprints, credentials, protocols, CVEs, UPnP), `json` (bounded parser/writer), `update` (verified downloads), `source` (git updates), `selftest`. See [docs/architecture.md](docs/architecture.md).
+
+---
+
+## Testing
 
 ```sh
-cargo build --release
-cargo test                 # 39 unit tests + 8 end-to-end tests
-cargo run -- selftest      # in-binary checks
+cargo test                 # 41 unit + 9 end-to-end checks
+cargo run -- selftest      # runs inside the binary, no cargo needed on target
 cargo fmt --check
 ```
 
-Cross-compile:
+The end-to-end suite drives the built binary: help/version, `db-info`, `selftest`, dry-run, bad-checksum abort, report shapes, invalid inputs, and a complete offline `boggy update` cycle against a temporary git repository (clone, fetch, dirty-tree guard, `--force`).
 
-```sh
-rustup target add aarch64-unknown-linux-gnu
-cargo build --release --target aarch64-unknown-linux-gnu
-scp target/aarch64-unknown-linux-gnu/release/boggy pi@host:/usr/local/bin/
-```
+CI checks zero dependencies, formatting, clippy, database hashes, all tests, the in-binary selftest, and a <5 MB release binary on x86_64, aarch64 and armv7.
 
-CI enforces zero crate dependencies, formatting, clippy, database hashes, tests and a <5 MB binary on x86_64, aarch64 and armv7.
+---
 
 ## Troubleshooting
 
 | Symptom | Fix |
-| --- | --- |
+|---|---|
 | `plain HTTP refused` | Use HTTPS or pass `--allow-http` |
-| `checksum mismatch` | Re-run `update-db`; your mirror or download is stale |
+| `checksum mismatch` | Re-run `update-db`; the mirror or download is stale |
 | `curl and wget are unavailable` | Install `curl` for HTTPS updates |
+| `working tree has local changes` | Commit them or pass `--force` |
 | `target expands to N hosts` | Narrow `--target` or raise `--max-hosts` |
-| No CVE findings | Try `--deep`, or check that banners expose a vendor; use `--min-severity info` |
+| No CVE findings | Try `--deep`; banners must expose a vendor; lower `--min-severity` |
+
+---
 
 ## Project
 
-- [Architecture](docs/architecture.md)
-- [Usage details](docs/usage.md)
-- [Contributing](CONTRIBUTING.md)
-- [Changelog](CHANGELOG.md)
+[Usage details](docs/usage.md) · [Architecture](docs/architecture.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).

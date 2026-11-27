@@ -3,6 +3,7 @@ mod iot;
 mod json;
 mod net;
 mod selftest;
+mod source;
 mod types;
 mod update;
 
@@ -455,6 +456,20 @@ fn build_report_text(report: &ScanReport, output: &str) -> String {
     }
 }
 
+fn release_summary() -> Result<String, String> {
+    let check = upd::check_latest()?;
+    let mut out = format!(
+        "boggy {}{} (latest release {})",
+        check.version,
+        if check.newer { " is outdated" } else { "" },
+        check.tag
+    );
+    if !check.assets.is_empty() {
+        out.push_str(&format!("\nassets: {}", check.assets.join(", ")));
+    }
+    Ok(out)
+}
+
 fn main() {
     let cli = match cli::parse(std::env::args().skip(1)) {
         Ok(cli) => cli,
@@ -484,62 +499,52 @@ fn main() {
             return;
         }
         Some(Command::Update {
-            db,
+            src,
             self_update,
             check_only,
-            no_db,
         }) => {
-            match upd::check_latest() {
-                Ok(check) => {
-                    println!(
-                        "boggy {}{} (latest release {})",
-                        check.version,
-                        if check.newer { " is outdated" } else { "" },
-                        check.tag
-                    );
-                    if !check.assets.is_empty() {
-                        println!("assets: {}", check.assets.join(", "));
+            if *check_only {
+                match release_summary() {
+                    Ok(text) => println!("{}", text),
+                    Err(e) => {
+                        eprintln!("release check failed: {}", e);
+                        std::process::exit(1);
                     }
                 }
-                Err(e) => eprintln!("release check failed: {}", e),
-            }
-            if *check_only {
                 return;
             }
             if *self_update {
-                match upd::self_update(db.allow_http) {
-                    Ok(message) => {
-                        println!("{}", message);
-                        return;
-                    }
+                match upd::self_update(false) {
+                    Ok(message) => println!("{}", message),
                     Err(e) => {
                         eprintln!("self-update failed: {}", e);
                         std::process::exit(1);
                     }
                 }
+                return;
             }
-            if !*no_db {
-                match upd::update_databases(&db.to_opts()) {
-                    Ok(summary) => println!("{}", summary),
-                    Err(e) => {
-                        eprintln!("update failed: {}", e);
-                        std::process::exit(1);
-                    }
+            match source::update(src) {
+                Ok(message) => println!("{}", message),
+                Err(e) => {
+                    eprintln!("source update failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+        Some(Command::SelfUpdate { allow_http }) => {
+            match upd::self_update(*allow_http) {
+                Ok(message) => println!("{}", message),
+                Err(e) => {
+                    eprintln!("self-update failed: {}", e);
+                    std::process::exit(1);
                 }
             }
             return;
         }
         Some(Command::UpdateCheck) => {
-            match upd::check_latest() {
-                Ok(check) => {
-                    println!(
-                        "boggy {}{} (latest release {})",
-                        check.version,
-                        if check.newer { " is outdated" } else { "" },
-                        check.tag
-                    );
-                    println!("assets: {}", check.assets.join(", "));
-                }
+            match release_summary() {
+                Ok(text) => println!("{}", text),
                 Err(e) => {
                     eprintln!("release check failed: {}", e);
                     std::process::exit(1);

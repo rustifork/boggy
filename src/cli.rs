@@ -1,5 +1,6 @@
 //! Hand-written argument parser: no clap, no external crates.
 
+use crate::source::SourceOpts;
 use crate::update::{UpdateOpts, CREDS_URL, CVE_URL, MANIFEST_URL};
 
 #[derive(Debug, Clone, Default)]
@@ -14,12 +15,14 @@ pub enum Command {
         db: DbUpdateArgs,
     },
     Update {
-        db: DbUpdateArgs,
+        src: SourceOpts,
         self_update: bool,
         check_only: bool,
-        no_db: bool,
     },
     UpdateCheck,
+    SelfUpdate {
+        allow_http: bool,
+    },
     DbInfo,
     SelfTest,
 }
@@ -147,8 +150,9 @@ Usage: boggy [OPTIONS] [COMMAND]
 
 Commands:
   update-db     Download and verify the latest CVE and credential databases
-  update        Check for a release and refresh databases (or self-update)
+  update        Update the source code from GitHub with git
   update-check  Print the latest release version without changing anything
+  self-update   Replace the binary with a verified release asset
   db-info       Show hashes and active locations of the shipped databases
   selftest      Run integrity and parser checks without cargo
   help          Print this message
@@ -202,16 +206,23 @@ Options:
 ";
 
 const UPGRADE_HELP: &str = "\
-Check for a release, refresh databases or self-update
+Update boggy source code from GitHub (databases are handled by `update-db`)
 
 Usage: boggy update [OPTIONS]
 
 Options:
-  [all update-db options]
-      --self          Replace the running binary with the verified release asset
-      --check-only    Only print the latest release information
-      --no-db         Skip the database refresh
-  -h, --help          Show help
+      --dir <PATH>         Working directory (default: current git repo or ~/.boggy/src/boggy)
+      --repo <URL>         HTTPS GitHub repository
+      --branch <NAME>      Branch to track (default: main)
+      --force              Allow reset of local changes / overwrite of a directory
+      --build              Build a release binary after updating
+      --install            Install the built binary to ~/.local/bin/boggy
+      --install-path <P>   Override the install destination
+      --allow-local        Permit file:// repositories (tests and offline mirrors)
+      --dry-run            Show the commit and changes without touching files
+      --self               Alias for `self-update` (verified release binary)
+      --check-only         Alias for `update-check`
+  -h, --help               Show help
 ";
 
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError> {
@@ -242,19 +253,30 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
                 break;
             }
             "update" => {
-                let db = parse_db_args(&expanded, &mut i)?;
+                let mut src = SourceOpts::default();
                 let mut self_update = false;
                 let mut check_only = false;
-                let mut no_db = false;
+                i += 1;
                 while i < expanded.len() {
-                    match expanded[i].as_str() {
+                    let flag = expanded[i].as_str();
+                    match flag {
+                        "--dir" => src.dir = Some(value(&expanded, &mut i, flag)?),
+                        "--repo" => src.repo = value(&expanded, &mut i, flag)?,
+                        "--branch" => src.branch = value(&expanded, &mut i, flag)?,
+                        "--install-path" => {
+                            src.install_path = Some(value(&expanded, &mut i, flag)?)
+                        }
+                        "--force" => src.force = true,
+                        "--build" => src.build = true,
+                        "--install" => src.install = true,
+                        "--allow-local" => src.allow_local = true,
+                        "--dry-run" => src.dry_run = true,
                         "--self" => self_update = true,
                         "--check-only" => check_only = true,
-                        "--no-db" => no_db = true,
                         "-h" | "--help" => return Err(ParseError::Help(UPGRADE_HELP.into())),
                         other => {
                             return Err(ParseError::Message(format!(
-                                "unknown update option: {}",
+                                "unknown update option: {} (try `boggy update --help`)",
                                 other
                             )))
                         }
@@ -262,11 +284,31 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
                     i += 1;
                 }
                 cli.command = Some(Command::Update {
-                    db,
+                    src,
                     self_update,
                     check_only,
-                    no_db,
                 });
+                break;
+            }
+            "self-update" => {
+                let mut allow_http = false;
+                i += 1;
+                while i < expanded.len() {
+                    match expanded[i].as_str() {
+                        "--allow-http" => allow_http = true,
+                        "-h" | "--help" => {
+                            return Err(ParseError::Help("boggy self-update [--allow-http]".into()))
+                        }
+                        other => {
+                            return Err(ParseError::Message(format!(
+                                "unknown self-update option: {}",
+                                other
+                            )))
+                        }
+                    }
+                    i += 1;
+                }
+                cli.command = Some(Command::SelfUpdate { allow_http });
                 break;
             }
             "update-check" => {
@@ -450,11 +492,17 @@ mod tests {
 
     #[test]
     fn self_update_flags() {
-        let cli = parse(args(&["update", "--self", "--no-db"])).unwrap();
+        let cli = parse(args(&["update", "--self"])).unwrap();
         match cli.command.unwrap() {
-            Command::Update {
-                self_update, no_db, ..
-            } => assert!(self_update && no_db),
+            Command::Update { self_update, .. } => assert!(self_update),
+            _ => panic!("wrong command"),
+        }
+        let cli = parse(args(&["update", "--dir", "/tmp/x", "--build", "--dry-run"])).unwrap();
+        match cli.command.unwrap() {
+            Command::Update { src, .. } => {
+                assert_eq!(src.dir.as_deref(), Some("/tmp/x"));
+                assert!(src.build && src.dry_run);
+            }
             _ => panic!("wrong command"),
         }
     }

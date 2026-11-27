@@ -52,24 +52,36 @@ which makes it usable as a CI gate.
 
 ## Updates
 
+Three separate paths:
+
 ```sh
-boggy update-db                          # both databases into ~/.boggy/, verified
+# Source code (git)
+boggy update                                   # fetch + apply tracked branch
+boggy update --dry-run                         # print target commit, change nothing
+boggy update --build --install                 # compile and install to ~/.local/bin
+boggy update --dir ~/src/boggy --branch main
+boggy update --force                           # discard local changes if needed
+
+# Databases (HTTPS, SHA-256 pinned)
+boggy update-db
 boggy update-db --cves-only
 boggy update-db --creds-only
+boggy update-db --dry-run
 boggy update-db --url https://mirror/cves.json --cves-sha256 <hex>
-boggy update                             # release check + database refresh
-boggy update --check-only
-boggy update --self                      # verified self-update of the binary
+
+# Binary and inspection
+boggy self-update
 boggy update-check
 boggy db-info
-boggy update-db --dry-run
 boggy selftest
 ```
 
-Downloads are SHA-256 pinned against `db/manifest.json`, limited in size, never follow
-redirects and reject plain HTTP unless `--allow-http` is given. Writes are atomic:
-databases are mode 0600, the self-updated binary 0755. A checksum or schema mismatch
-aborts the whole update before any file is replaced.
+`boggy update` uses git with an argument array: branch and repository URLs are validated,
+a dirty working tree is refused unless `--force`, and outside a checkout the source is
+cloned into `~/.boggy/src/boggy` or `--dir`. Database downloads are SHA-256 pinned against
+`db/manifest.json`, size-bounded, never follow redirects and reject plain HTTP unless
+`--allow-http` is given. Writes are atomic: databases are mode 0600, binaries 0755. A
+checksum or schema mismatch aborts the whole update before any file is replaced.
 
 The refresh tool `tools/refresh_cves.py` can extend the embedded CVE database from NVD:
 
@@ -90,7 +102,8 @@ scp target/aarch64-unknown-linux-gnu/release/boggy pi@host:/usr/local/bin/
 ```
 
 No root privileges are required (TCP connect, UDP probes, multicast discovery).
-`curl` (or `wget`) must be installed for `update-db` / `update` HTTPS downloads; the
-scanner itself needs no runtime dependency beyond the binary and its JSON database files.
-`boggy selftest` runs integrity and parser checks inside the binary, useful on a Pi without
-cargo. `--dry-run` validates an update and prints what would be written, without touching files.
+`git` is needed for `boggy update`; `curl` (or `wget`) for `update-db` / `self-update`
+HTTPS downloads. The scanner itself needs no runtime dependency beyond the binary and its
+JSON database files. `boggy selftest` runs integrity and parser checks inside the binary,
+useful on a Pi without cargo. `--dry-run` validates an update and prints what would be
+written, without touching files.

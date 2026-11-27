@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+- `boggy update` now updates **source code from GitHub** via git (fetch/reset or clone),
+  with `--dir`, `--repo`, `--branch`, `--force`, `--build`, `--install` and `--dry-run`.
+- `boggy self-update` remains the verified binary update; `update-db` remains data only.
+- Source updates refuse dirty trees unless `--force`; branch names and URLs are validated.
+- End-to-end offline git test covering clone, fetch, dirty-tree guard and `--force`.
+- README redesigned: banner, at-a-glance table, grouped commands, Mermaid diagram,
+  security model and troubleshooting.
+
 ## 0.5.0
 
 - `boggy selftest`: 13 in-binary integrity/parser checks for devices without cargo.
