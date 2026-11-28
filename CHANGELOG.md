@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0
+
+- TLS certificate fingerprinting (`--tls-probe`) via system openssl, opt-in and bounded.
+- Self-contained HTML report with `--output html`.
+- `boggy config set KEY VALUE` writes defaults to `~/.boggy/config.json`.
+- `--watch SECONDS` runs continuous scans with baseline comparison support.
+- IPv6 targets: `--target ::1` is scanned like an IPv4 host.
+- 59 unit + 18 end-to-end tests.
+
 ## 0.8.0
 
 - Baseline monitoring: `--compare FILE` computes new/missing hosts and new/resolved

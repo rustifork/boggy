@@ -3,7 +3,7 @@
 
 use crate::net::md5;
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::time::Duration;
 
 const MAX_RESPONSE: usize = 24 * 1024;
@@ -52,15 +52,22 @@ impl HttpResponse {
     }
 }
 
+fn host_header(ip: IpAddr, port: u16) -> String {
+    match ip {
+        IpAddr::V6(_) => format!("[{}]:{}", ip, port),
+        IpAddr::V4(_) => format!("{}:{}", ip, port),
+    }
+}
+
 pub fn request(
-    ip: Ipv4Addr,
+    ip: IpAddr,
     port: u16,
     req: &HttpRequest<'_>,
     timeout_ms: u64,
 ) -> Option<HttpResponse> {
     let line = format!("{} {} HTTP/1.0", req.method, req.path);
     let mut headers = Vec::with_capacity(req.headers.len() + 1);
-    headers.push(("Host".to_string(), format!("{}:{}", ip, port)));
+    headers.push(("Host".to_string(), host_header(ip, port)));
     headers.push((
         "User-Agent".to_string(),
         format!("boggy/{}", env!("CARGO_PKG_VERSION")),
@@ -79,7 +86,7 @@ fn safe_field(value: &str, max: usize) -> bool {
 }
 
 pub fn raw_request(
-    ip: Ipv4Addr,
+    ip: IpAddr,
     port: u16,
     request_line: &str,
     headers: &[(String, String)],
@@ -93,7 +100,7 @@ pub fn raw_request(
     {
         return None;
     }
-    let addr = SocketAddr::new(std::net::IpAddr::V4(ip), port);
+    let addr = SocketAddr::new(ip, port);
     let to = Duration::from_millis(timeout_ms.max(50));
     let mut stream = TcpStream::connect_timeout(&addr, to).ok()?;
     let _ = stream.set_read_timeout(Some(to));

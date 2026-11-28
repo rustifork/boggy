@@ -7,7 +7,7 @@ use crate::net::http::{self, HttpRequest, HttpResponse};
 use crate::types::Finding;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, TcpStream};
+use std::net::{IpAddr, TcpStream};
 use std::time::Duration;
 
 #[derive(Clone, Debug, Default)]
@@ -169,7 +169,7 @@ fn found(
     title: &str,
     user: &str,
     pass: &str,
-    ip: Ipv4Addr,
+    ip: IpAddr,
     port: u16,
     method: &str,
 ) -> Finding {
@@ -185,7 +185,7 @@ fn found(
 
 /// HTTP Basic, Digest and simple form logins.
 pub fn http_default_creds(
-    ip: Ipv4Addr,
+    ip: IpAddr,
     port: u16,
     timeout_ms: u64,
     vendor: &str,
@@ -436,9 +436,9 @@ fn read_available(stream: &mut TcpStream, buf: &mut [u8], timeout_ms: u64) -> St
 
 /// One credential attempt on its own connection: a failed login frequently makes
 /// embedded Telnet servers close the socket, so reusing it causes false negatives.
-fn telnet_attempt(ip: Ipv4Addr, port: u16, to: u64, user: &str, pass: &str) -> bool {
+fn telnet_attempt(ip: IpAddr, port: u16, to: u64, user: &str, pass: &str) -> bool {
     let mut stream = match TcpStream::connect_timeout(
-        &std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port),
+        &std::net::SocketAddr::new(ip, port),
         Duration::from_millis(to),
     ) {
         Ok(s) => s,
@@ -491,7 +491,7 @@ fn telnet_attempt(ip: Ipv4Addr, port: u16, to: u64, user: &str, pass: &str) -> b
 }
 
 pub fn telnet_default_creds(
-    ip: Ipv4Addr,
+    ip: IpAddr,
     port: u16,
     timeout_ms: u64,
     vendor: &str,
@@ -516,9 +516,9 @@ pub fn telnet_default_creds(
     Vec::new()
 }
 
-fn ftp_attempt(ip: Ipv4Addr, port: u16, to: u64, user: &str, pass: &str) -> Option<&'static str> {
+fn ftp_attempt(ip: IpAddr, port: u16, to: u64, user: &str, pass: &str) -> Option<&'static str> {
     let mut stream = match TcpStream::connect_timeout(
-        &std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port),
+        &std::net::SocketAddr::new(ip, port),
         Duration::from_millis(to),
     ) {
         Ok(s) => s,
@@ -560,7 +560,7 @@ fn ftp_attempt(ip: Ipv4Addr, port: u16, to: u64, user: &str, pass: &str) -> Opti
 }
 
 pub fn ftp_default_creds(
-    ip: Ipv4Addr,
+    ip: IpAddr,
     port: u16,
     timeout_ms: u64,
     vendor: &str,
@@ -585,7 +585,7 @@ pub fn ftp_default_creds(
 }
 
 pub fn rtsp_default_creds(
-    ip: Ipv4Addr,
+    ip: IpAddr,
     port: u16,
     timeout_ms: u64,
     vendor: &str,

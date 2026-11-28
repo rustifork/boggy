@@ -2,7 +2,7 @@ use crate::net::http;
 use crate::types::PortResult;
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::time::Duration;
 
 /// IoT-oriented top ports. Enough to find a device without waking every socket.
@@ -79,7 +79,7 @@ fn connect_ms(timeout_ms: u64) -> u64 {
     timeout_ms.clamp(50, 400)
 }
 
-pub fn scan_port(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> PortResult {
+pub fn scan_port(ip: IpAddr, port: u16, timeout_ms: u64) -> PortResult {
     let mut res = PortResult {
         port,
         open: false,
@@ -89,7 +89,7 @@ pub fn scan_port(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> PortResult {
         server: None,
         title: None,
     };
-    let addr = SocketAddr::new(std::net::IpAddr::V4(ip), port);
+    let addr = SocketAddr::new(ip, port);
     let connect = Duration::from_millis(connect_ms(timeout_ms));
     let read = Duration::from_millis(timeout_ms.max(50));
     // One connection does both the liveness check and the banner grab.
@@ -152,7 +152,7 @@ pub fn scan_port(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> PortResult {
 
 fn http_probe(
     stream: &mut TcpStream,
-    ip: Ipv4Addr,
+    ip: IpAddr,
     port: u16,
 ) -> Option<(String, Option<String>, Option<String>)> {
     let req = format!(

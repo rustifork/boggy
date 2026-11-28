@@ -238,6 +238,23 @@ fn parallel_ports_and_keepalive_servers() {
 }
 
 #[test]
+fn config_set_writes_defaults() {
+    let home = tmp("config-set");
+    fs::create_dir_all(home.join(".boggy")).unwrap();
+    let out = run(bin()
+        .args(["config", "set", "threads", "12"])
+        .env("HOME", &home));
+    let text = ok(&out);
+    assert!(text.contains("threads"), "{}", text);
+    let saved = fs::read_to_string(home.join(".boggy/config.json")).unwrap();
+    assert!(saved.contains("12"), "{}", saved);
+    let bad = run(bin()
+        .args(["config", "set", "threads", "x"])
+        .env("HOME", &home));
+    assert!(!bad.status.success());
+}
+
+#[test]
 fn config_file_is_readable() {
     let home = tmp("config-home");
     let dir = home.join(".boggy");
@@ -282,6 +299,47 @@ fn baseline_comparison_is_reported() {
     assert!(text.contains("baseline comparison"), "{}", text);
     assert!(text.contains("missing hosts: 1"), "{}", text);
     assert!(text.contains("resolved findings: 1"), "{}", text);
+}
+
+#[test]
+fn ipv6_target_is_accepted() {
+    let out = run(bin().args([
+        "--discovery-ms",
+        "100",
+        "--target",
+        "::1",
+        "--ports",
+        "1",
+        "--timeout",
+        "100",
+        "--no-creds",
+        "--no-cve",
+        "--output",
+        "json",
+    ]));
+    let text = ok(&out);
+    assert!(text.contains("\"target\": \"::1\""), "{}", text);
+}
+
+#[test]
+fn html_output_is_well_formed() {
+    let out = run(bin().args([
+        "--discovery-ms",
+        "100",
+        "--target",
+        "127.0.0.1/32",
+        "--ports",
+        "1",
+        "--timeout",
+        "100",
+        "--no-creds",
+        "--no-cve",
+        "--output",
+        "html",
+    ]));
+    let text = ok(&out);
+    assert!(text.starts_with("<!doctype html>"));
+    assert!(text.contains("boggy scan report"));
 }
 
 #[test]

@@ -1,5 +1,5 @@
 use crate::json::Json;
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -64,7 +64,7 @@ impl PortResult {
 
 #[derive(Clone, Debug)]
 pub struct HostResult {
-    pub ip: Ipv4Addr,
+    pub ip: IpAddr,
     pub hostname: Option<String>,
     pub mac: Option<String>,
     pub vendor: Option<String>,

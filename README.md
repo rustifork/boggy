@@ -26,10 +26,10 @@
 | Discovery | ARP, mDNS + TXT, SSDP/UPnP, TCP liveness |
 | Probes | HTTP Basic/Digest/forms, Telnet, FTP, MQTT, CoAP, SNMP, Redis, Modbus, Docker, ADB, NTP, BACnet, EtherNet/IP |
 | UPnP IGD | WAN IP and active port mappings via SOAP |
-| Reports | text, JSON, JSONL, SARIF 2.1.0, baseline diff, severity summary, CI exit codes |
+| Reports | text, JSON, JSONL, SARIF 2.1.0, HTML, baseline diff, severity summary, CI exit codes |
 | Updates | `update` = source code (git), `update-db` = data, `self-update` = binary |
-| Defaults | optional `~/.boggy/config.json`, inspected with `boggy config` |
-| Tests | 56 unit + 15 end-to-end |
+| Defaults | optional `~/.boggy/config.json`, `boggy config` / `boggy config set KEY VALUE` |
+| Tests | 59 unit + 18 end-to-end |
 
 **Contents:** [Quick start](#quick-start) · [Commands](#commands) · [Security](#security) · [Architecture](#architecture) · [Testing](#testing) · [Troubleshooting](#troubleshooting)
 
@@ -93,9 +93,11 @@ boggy --target 192.168.1.0/24 -j 8 --rate-limit 32 --timeout 500
 | `--max-cve <N>` | CVE findings per host, default 15 |
 | `--max-hosts <N>` | Refuse larger CIDR expansions, default 65536 |
 | `--compare <FILE>` | Diff findings against a baseline JSON report |
+| `--tls-probe` | Fingerprint TLS certificates with openssl (opt-in) |
+| `--watch <S>` | Repeat the scan every N seconds |
 | `--min-severity <S>` | `info\|low\|medium\|high\|critical` |
 | `--fail-on <S>` | Exit 2 when a finding reaches this severity |
-| `-o, --output <FMT>` | `text`, `json`, `jsonl`, `sarif` |
+| `-o, --output <FMT>` | `text`, `json`, `jsonl`, `sarif`, `html` |
 | `--out <FILE>` | Write the report to a file |
 | `--cve-file` / `--creds-file` | Override databases |
 | `-v` | Progress on stderr |
@@ -139,6 +141,8 @@ boggy db-info                         # embedded hashes and active overrides
 boggy self-update                     # verified release binary
 boggy selftest                        # 17 integrity/parser checks
 boggy config                          # show effective config file
+boggy config set threads 8            # persist a default
+boggy --target ::1 --ports 443 --tls-probe --watch 300
 ./target/release/boggy --target 192.168.1.0/24 --compare baseline.json
 ```
 
@@ -190,7 +194,7 @@ Everything lives in `src/`: `net` (discovery, ports, HTTP, MD5, SHA-256), `iot` 
 ## Testing
 
 ```sh
-cargo test                 # 56 unit + 15 end-to-end checks
+cargo test                 # 59 unit + 18 end-to-end checks
 cargo run -- selftest      # runs inside the binary, no cargo needed on target
 cargo fmt --check
 ```

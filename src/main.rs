@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod diff;
+mod html;
 mod iot;
 mod json;
 mod net;
@@ -10,16 +11,16 @@ mod source;
 mod types;
 mod update;
 
-use crate::cli::{Command, ScanOpts};
+use crate::cli::{Cli, Command, ScanOpts};
 use crate::iot::creds as dc;
-use crate::iot::{cve, fingerprints, protocols, upnp};
+use crate::iot::{cve, fingerprints, protocols, tls, upnp};
 use crate::net::discover;
 use crate::net::ports;
 use crate::net::subnet::Subnet;
 use crate::types::{Finding, HostResult, PortResult, ScanReport, Severity, Summary};
 use crate::update as upd;
 use std::collections::{BTreeMap, HashSet};
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -81,7 +82,7 @@ fn now_str() -> String {
 
 #[allow(clippy::too_many_arguments)]
 fn scan_host(
-    ip: std::net::Ipv4Addr,
+    ip: IpAddr,
     opts: &ScanOpts,
     custom_ports: Option<&[u16]>,
     mdns: &BTreeMap<std::net::Ipv4Addr, discover::MdnsEntry>,
@@ -93,7 +94,13 @@ fn scan_host(
     cve_db: &[cve::CveEntry],
     cred_db: &dc::CredDb,
 ) -> Option<HostResult> {
-    let discovered = mdns.contains_key(&ip) || ssdp.contains_key(&ip) || arp.contains_key(&ip);
+    let v4 = match ip {
+        IpAddr::V4(v) => Some(v),
+        IpAddr::V6(_) => None,
+    };
+    let discovered = v4
+        .map(|v| mdns.contains_key(&v) || ssdp.contains_key(&v) || arp.contains_key(&v))
+        .unwrap_or(false);
     if passive && !discovered {
         return None;
     }
@@ -146,8 +153,8 @@ fn scan_host(
         port_results.sort_by_key(|p| p.port);
     }
 
-    let hostname = mdns.get(&ip).and_then(|e| e.name.clone());
-    let mac = arp.get(&ip).cloned();
+    let hostname = v4.and_then(|v| mdns.get(&v)).and_then(|e| e.name.clone());
+    let mac = v4.and_then(|v| arp.get(&v)).cloned();
     let protocols = fingerprints::classify_ports(&port_results);
 
     let mut banner_text = port_results
@@ -167,10 +174,31 @@ fn scan_host(
         banner_text.push(' ');
         banner_text.push_str(h);
     }
-    if let Some(entry) = mdns.get(&ip) {
+    if let Some(entry) = v4.and_then(|v| mdns.get(&v)) {
         for value in &entry.txt {
             banner_text.push(' ');
             banner_text.push_str(value);
+        }
+    }
+
+    let mut tls_findings = Vec::new();
+    if opts.tls_probe {
+        for pr in &port_results {
+            if !pr.tls {
+                continue;
+            }
+            sem.acquire();
+            let info = tls::probe(ip, pr.port, opts.timeout);
+            sem.release();
+            if let Some(info) = info {
+                for value in [&info.subject, &info.issuer, &info.protocol] {
+                    if let Some(v) = value {
+                        banner_text.push(' ');
+                        banner_text.push_str(v);
+                    }
+                }
+                tls_findings.extend(tls::findings(ip, pr.port, &info));
+            }
         }
     }
 
@@ -202,9 +230,10 @@ fn scan_host(
     }
 
     let mut findings: Vec<Finding> = Vec::new();
+    findings.extend(tls_findings);
 
     if !passive {
-        if let Some(entry) = ssdp.get(&ip) {
+        if let Some(entry) = v4.and_then(|v| ssdp.get(&v)) {
             if entry
                 .search_target
                 .as_deref()
@@ -382,7 +411,7 @@ fn scan_host(
         }
         if opts.deep {
             for probe in [
-                protocols::ntp_probe as fn(Ipv4Addr, u64) -> Option<Finding>,
+                protocols::ntp_probe as fn(IpAddr, u64) -> Option<Finding>,
                 protocols::bacnet_probe,
                 protocols::ethernet_ip_probe,
             ] {
@@ -571,6 +600,7 @@ fn build_report_text(report: &ScanReport, output: &str) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         "sarif" => sarif::render(report),
+        "html" => html::render(report),
         _ => render_text(report),
     }
 }
@@ -681,9 +711,17 @@ fn main() {
             }
             return;
         }
-        Some(Command::Config { show_path }) => {
+        Some(Command::Config { show_path, set }) => {
             if *show_path {
                 println!("{}", config::path().display());
+            } else if let Some((key, value)) = set {
+                match config::set(key, value) {
+                    Ok(message) => println!("{}", message),
+                    Err(e) => {
+                        eprintln!("config set failed: {}", e);
+                        std::process::exit(1);
+                    }
+                }
             } else {
                 println!("{}", config::show());
             }
@@ -702,16 +740,44 @@ fn main() {
         None => {}
     }
 
+    if cli.scan.watch > 0 {
+        eprintln!(
+            "boggy: watching every {} seconds (Ctrl-C to stop)",
+            cli.scan.watch
+        );
+        loop {
+            match execute_scan(&cli) {
+                Ok(2) => eprintln!("boggy: findings reached --fail-on threshold"),
+                Ok(_) => {}
+                Err(e) => eprintln!("boggy: scan failed: {}", e),
+            }
+            thread::sleep(std::time::Duration::from_secs(cli.scan.watch));
+        }
+    }
+
+    match execute_scan(&cli) {
+        Ok(code) if code != 0 => std::process::exit(code),
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("boggy: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn execute_scan(cli: &Cli) -> Result<i32, String> {
     let opts = &cli.scan;
 
     let mut subnets: Vec<Subnet> = Vec::new();
+    let mut all_hosts: Vec<IpAddr> = Vec::new();
     for t in &opts.target {
-        match Subnet::parse(t) {
-            Some(s) => subnets.push(s),
-            None => {
-                eprintln!("invalid target: {}", t);
-                std::process::exit(1);
-            }
+        if let Some(s) = Subnet::parse(t) {
+            subnets.push(s);
+        } else if let Ok(ip) = t.parse::<IpAddr>() {
+            all_hosts.push(ip);
+        } else {
+            eprintln!("invalid target: {}", t);
+            return Err("scan setup failed".into());
         }
     }
     if opts.auto || subnets.is_empty() {
@@ -719,7 +785,7 @@ fn main() {
             Some(s) => subnets.push(s),
             None if subnets.is_empty() => {
                 eprintln!("could not auto-detect subnet; use --target CIDR");
-                std::process::exit(1);
+                return Err("scan setup failed".into());
             }
             None => {}
         }
@@ -735,7 +801,7 @@ fn main() {
             Some(p) => Some(p),
             None => {
                 eprintln!("invalid --ports specification: {}", spec);
-                std::process::exit(1);
+                return Err("scan setup failed".into());
             }
         },
         None => None,
@@ -754,20 +820,29 @@ fn main() {
                 "target expands to {} hosts (limit {}); narrow --target or raise --max-hosts",
                 projected, opts.max_hosts
             );
-            std::process::exit(1);
+            return Err("scan setup failed".into());
         }
     }
 
-    let mut all_hosts: Vec<std::net::Ipv4Addr> = Vec::new();
     for s in &subnets {
-        all_hosts.extend(s.hosts());
+        all_hosts.extend(s.hosts().into_iter().map(IpAddr::V4));
     }
-    all_hosts.retain(|ip| !excluded.iter().any(|s| s.contains(*ip)));
+    all_hosts.retain(|ip| match ip {
+        IpAddr::V4(v) => !excluded.iter().any(|s| s.contains(*v)),
+        IpAddr::V6(_) => true,
+    });
     all_hosts.sort();
     all_hosts.dedup();
 
     if !opts.passive {
-        discover::arp_sweep(&all_hosts);
+        let v4_hosts: Vec<std::net::Ipv4Addr> = all_hosts
+            .iter()
+            .filter_map(|ip| match ip {
+                IpAddr::V4(v) => Some(*v),
+                IpAddr::V6(_) => None,
+            })
+            .collect();
+        discover::arp_sweep(&v4_hosts);
     }
     let mut arp = discover::arp_table();
 
@@ -780,14 +855,15 @@ fn main() {
         ssdp_map.entry(e.ip).or_insert(e);
     }
     for ip in mdns_map.keys().chain(ssdp_map.keys()).chain(arp.keys()) {
-        if all_hosts.contains(ip) {
+        let addr = IpAddr::V4(*ip);
+        if all_hosts.contains(&addr) {
             continue;
         }
         if subnets.iter().any(|s| s.contains(*ip)) && !excluded.iter().any(|s| s.contains(*ip)) {
-            all_hosts.push(*ip);
+            all_hosts.push(addr);
         }
     }
-    arp.retain(|ip, _| all_hosts.contains(ip));
+    arp.retain(|ip, _| all_hosts.contains(&IpAddr::V4(*ip)));
     all_hosts.sort();
     all_hosts.dedup();
 
@@ -797,7 +873,7 @@ fn main() {
             all_hosts.len(),
             opts.max_hosts
         );
-        std::process::exit(1);
+        return Err("scan setup failed".into());
     }
 
     if opts.verbose {
@@ -828,7 +904,7 @@ fn main() {
         opts.cred_limit
     };
 
-    let (tx, rx) = mpsc::channel::<std::net::Ipv4Addr>();
+    let (tx, rx) = mpsc::channel::<IpAddr>();
     let rx = Arc::new(Mutex::new(rx));
     let (res_tx, res_rx) = mpsc::channel::<HostResult>();
 
@@ -938,7 +1014,7 @@ fn main() {
             Ok(result) => report.diff = Some(result),
             Err(e) => {
                 eprintln!("baseline comparison failed: {}", e);
-                std::process::exit(1);
+                return Err("scan setup failed".into());
             }
         }
     }
@@ -948,7 +1024,7 @@ fn main() {
             Ok(()) => eprintln!("report written to {}", path),
             Err(e) => {
                 eprintln!("write failed: {}", e);
-                std::process::exit(1);
+                return Err("scan setup failed".into());
             }
         }
     } else {
@@ -962,7 +1038,9 @@ fn main() {
             .iter()
             .any(|h| h.findings.iter().any(|f| f.rank() >= threshold))
         {
-            std::process::exit(2);
+            return Ok(2);
         }
     }
+
+    Ok(0)
 }

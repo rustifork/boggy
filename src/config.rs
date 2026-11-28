@@ -155,9 +155,80 @@ pub fn show() -> String {
     }
 }
 
+const NUMERIC: &[&str] = &[
+    "threads",
+    "rate_limit",
+    "timeout",
+    "discovery_ms",
+    "cred_limit",
+    "max_cve",
+    "max_hosts",
+];
+const BOOLEAN: &[&str] = &["fast", "deep", "passive", "no_creds", "no_cve"];
+const STRINGS: &[&str] = &["output", "min_severity", "fail_on"];
+const LISTS: &[&str] = &["target", "exclude"];
+
+pub fn set(key: &str, value: &str) -> Result<String, String> {
+    let root = match std::fs::read_to_string(path()) {
+        Ok(data) => crate::json::parse(data.as_bytes()).unwrap_or(Json::Obj(Vec::new())),
+        Err(_) => Json::Obj(Vec::new()),
+    };
+    let mut fields = match root {
+        Json::Obj(fields) => fields,
+        _ => Vec::new(),
+    };
+    let new_value = if NUMERIC.contains(&key) {
+        let n: u64 = value
+            .parse()
+            .map_err(|_| format!("{} needs a number", key))?;
+        Json::num(n as f64)
+    } else if BOOLEAN.contains(&key) {
+        match value.to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => Json::Bool(true),
+            "false" | "0" | "no" => Json::Bool(false),
+            _ => return Err(format!("{} needs true or false", key)),
+        }
+    } else if LISTS.contains(&key) {
+        let mut items = match fields
+            .iter()
+            .find(|(k, _)| k == key)
+            .and_then(|(_, v)| v.as_arr())
+        {
+            Some(items) => items.to_vec(),
+            None => Vec::new(),
+        };
+        items.push(Json::str(value));
+        Json::arr(items)
+    } else if STRINGS.contains(&key) {
+        Json::str(value)
+    } else {
+        return Err(format!(
+            "unknown key {} (allowed: {})",
+            key,
+            [NUMERIC, BOOLEAN, STRINGS, LISTS].concat().join(", ")
+        ));
+    };
+    if let Some((_, field)) = fields.iter_mut().find(|(k, _)| k == key) {
+        *field = new_value;
+    } else {
+        fields.push((key.to_string(), new_value));
+    }
+    let target = path();
+    let data = Json::Obj(fields).pretty();
+    crate::update::atomic_write(&target, data.as_bytes(), false)?;
+    Ok(format!("{}: {} = {}", target.display(), key, value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_unknown_or_bad_values() {
+        assert!(set("bogus", "1").is_err());
+        assert!(set("threads", "many").is_err());
+        assert!(set("fast", "maybe").is_err());
+    }
 
     #[test]
     fn applies_only_present_fields() {

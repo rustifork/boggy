@@ -28,6 +28,7 @@ pub enum Command {
     SelfTest,
     Config {
         show_path: bool,
+        set: Option<(String, String)>,
     },
 }
 
@@ -111,6 +112,8 @@ pub struct ScanOpts {
     pub creds_file: Option<String>,
     pub max_hosts: usize,
     pub compare: Option<String>,
+    pub tls_probe: bool,
+    pub watch: u64,
 }
 
 impl Default for ScanOpts {
@@ -140,6 +143,8 @@ impl Default for ScanOpts {
             creds_file: None,
             max_hosts: 65536,
             compare: None,
+            tls_probe: false,
+            watch: 0,
         }
     }
 }
@@ -163,7 +168,7 @@ Commands:
   self-update   Replace the binary with a verified release asset
   db-info       Show hashes and active locations of the shipped databases
   selftest      Run integrity and parser checks without cargo
-  config        Show the active configuration file or its path
+  config        Show defaults, or `config set KEY VALUE`
   help          Print this message
 
 Options:
@@ -174,7 +179,7 @@ Options:
       --fast                Top ports only
       --passive             Discovery only, no active probes
       --ports <SPEC>        22,80,443,8000-8100
-  -o, --output <FORMAT>     text | json | jsonl | sarif (default: text)
+  -o, --output <FORMAT>     text | json | jsonl | sarif | html (default: text)
       --out <FILE>          Write report to file
   -j, --threads <N>         Concurrent workers (default: 64)
       --rate-limit <N>      Max simultaneous sockets (0 = auto)
@@ -188,6 +193,8 @@ Options:
       --fail-on <S>         Exit 2 when a finding reaches this severity
       --max-hosts <N>       Refuse larger target expansions (default: 65536)
       --compare <FILE>      Compare findings with a baseline JSON report
+      --tls-probe           Fingerprint TLS certificates via openssl (opt-in)
+      --watch <SECONDS>     Repeat the scan continuously (0 = once)
       --cve-file <FILE>     Override CVE database
       --creds-file <FILE>   Override credential database
   -v, --verbose             Progress on stderr
@@ -260,9 +267,12 @@ fn validate_scan(scan: &ScanOpts) -> Result<(), ParseError> {
             return Err(ParseError::Message(format!("invalid --fail-on: {}", value)));
         }
     }
-    if !matches!(scan.output.as_str(), "text" | "json" | "jsonl" | "sarif") {
+    if !matches!(
+        scan.output.as_str(),
+        "text" | "json" | "jsonl" | "sarif" | "html"
+    ) {
         return Err(ParseError::Message(format!(
-            "invalid --output: {} (expected text, json, jsonl or sarif)",
+            "invalid --output: {} (expected text, json, jsonl, sarif or html)",
             scan.output
         )));
     }
@@ -381,12 +391,29 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
             }
             "config" => {
                 let mut show_path = false;
+                let mut set = None;
                 let mut j = i + 1;
+                if expanded.get(j).map(String::as_str) == Some("set") {
+                    j += 1;
+                    let key = expanded
+                        .get(j)
+                        .cloned()
+                        .ok_or_else(|| ParseError::Message("config set needs KEY".into()))?;
+                    j += 1;
+                    let value = expanded
+                        .get(j)
+                        .cloned()
+                        .ok_or_else(|| ParseError::Message("config set needs VALUE".into()))?;
+                    j += 1;
+                    set = Some((key, value));
+                }
                 while j < expanded.len() {
                     match expanded[j].as_str() {
                         "--path" => show_path = true,
                         "-h" | "--help" => {
-                            return Err(ParseError::Help("boggy config [--path]".into()))
+                            return Err(ParseError::Help(
+                                "boggy config [--path] | config set KEY VALUE".into(),
+                            ))
                         }
                         other => {
                             return Err(ParseError::Message(format!(
@@ -397,7 +424,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
                     }
                     j += 1;
                 }
-                cli.command = Some(Command::Config { show_path });
+                cli.command = Some(Command::Config { show_path, set });
                 return finish(cli, &expanded, j);
             }
             "-t" | "--target" => {
@@ -452,6 +479,12 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, ParseError>
             "--fail-on" => cli.scan.fail_on = Some(value(&expanded, &mut i, arg)?),
             "--ports" => cli.scan.ports = Some(value(&expanded, &mut i, arg)?),
             "--compare" => cli.scan.compare = Some(value(&expanded, &mut i, arg)?),
+            "--tls-probe" => cli.scan.tls_probe = true,
+            "--watch" => {
+                cli.scan.watch = value(&expanded, &mut i, arg)?
+                    .parse()
+                    .map_err(|_| ParseError::Message(format!("invalid number for {}", arg)))?;
+            }
             "--cve-file" => cli.scan.cve_file = Some(value(&expanded, &mut i, arg)?),
             "--creds-file" => cli.scan.creds_file = Some(value(&expanded, &mut i, arg)?),
             other => {
@@ -529,7 +562,10 @@ mod tests {
         assert!(matches!(
             parse(args(&["config", "--path"])),
             Ok(Cli {
-                command: Some(Command::Config { show_path: true }),
+                command: Some(Command::Config {
+                    show_path: true,
+                    set: None
+                }),
                 ..
             })
         ));
@@ -619,6 +655,9 @@ mod tests {
         assert!(parse(args(&["selftest", "extra"])).is_err());
         assert!(parse(args(&["--min-severity", "HIGH"])).is_ok());
         assert!(parse(args(&["--fast", "--deep"])).is_err());
+        let cli = parse(args(&["--watch", "5", "--tls-probe"])).unwrap();
+        assert_eq!(cli.scan.watch, 5);
+        assert!(cli.scan.tls_probe);
     }
 
     #[test]

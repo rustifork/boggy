@@ -23,6 +23,7 @@ boggy --target 192.168.1.0/24 --passive           # mDNS/SSDP/ARP only
 ```sh
 boggy --target 192.168.1.0/24 --output json --out report.json
 boggy --target 192.168.1.0/24 --output jsonl
+boggy --target 192.168.1.0/24 --output html --out report.html
 boggy --target 192.168.1.0/24 --min-severity high --fail-on critical -v
 boggy --target 192.168.1.0/24 --max-cve 5 --no-creds
 ```
@@ -47,7 +48,7 @@ which makes it usable as a CI gate.
 - `--timeout MS` per-probe timeout (default 800)
 - `--discovery-ms MS` mDNS/SSDP listen window (default 1500)
 - `--cve-file` / `--creds-file` override databases
-- `-o, --output text|json|jsonl|sarif`
+- `-o, --output text|json|jsonl|sarif|html`
 - `--compare FILE` diff against a baseline report
 - `boggy config` / `--path` inspect optional defaults
 - `--out FILE` write report to file

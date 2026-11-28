@@ -4,11 +4,11 @@
 use crate::net::http::{self, HttpRequest, HttpResponse};
 use crate::types::Finding;
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
+use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
 use std::time::Duration;
 
-fn tcp(ip: Ipv4Addr, port: u16, to: Duration) -> Option<TcpStream> {
-    let addr = SocketAddr::new(std::net::IpAddr::V4(ip), port);
+fn tcp(ip: IpAddr, port: u16, to: Duration) -> Option<TcpStream> {
+    let addr = SocketAddr::new(ip, port);
     let s = TcpStream::connect_timeout(&addr, to).ok()?;
     let _ = s.set_read_timeout(Some(to));
     let _ = s.set_write_timeout(Some(to));
@@ -148,7 +148,7 @@ fn snmp_sysdescr(data: &[u8]) -> Option<String> {
     }
 }
 
-pub fn snmp_probe(ip: Ipv4Addr, community: &str, timeout_ms: u64) -> Option<Finding> {
+pub fn snmp_probe(ip: IpAddr, community: &str, timeout_ms: u64) -> Option<Finding> {
     let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
     let to = Duration::from_millis(timeout_ms.clamp(80, 250));
     let _ = sock.set_read_timeout(Some(to));
@@ -176,7 +176,7 @@ pub fn snmp_probe(ip: Ipv4Addr, community: &str, timeout_ms: u64) -> Option<Find
 
 // --- Cleartext / unauthenticated management services -----------------------------
 
-pub fn redis_probe(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Finding> {
+pub fn redis_probe(ip: IpAddr, port: u16, timeout_ms: u64) -> Option<Finding> {
     let mut s = tcp(ip, port, Duration::from_millis(timeout_ms.max(100)))?;
     s.write_all(b"PING\r\n").ok()?;
     let mut buf = [0u8; 512];
@@ -205,7 +205,7 @@ pub fn redis_probe(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Finding> 
     ))
 }
 
-pub fn memcached_probe(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Finding> {
+pub fn memcached_probe(ip: IpAddr, port: u16, timeout_ms: u64) -> Option<Finding> {
     let mut s = tcp(ip, port, Duration::from_millis(timeout_ms.max(100)))?;
     s.write_all(b"stats\r\n").ok()?;
     let mut buf = [0u8; 1024];
@@ -223,7 +223,7 @@ pub fn memcached_probe(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Findi
     }
 }
 
-pub fn adb_probe(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Finding> {
+pub fn adb_probe(ip: IpAddr, port: u16, timeout_ms: u64) -> Option<Finding> {
     let mut s = tcp(ip, port, Duration::from_millis(timeout_ms.max(100)))?;
     s.write_all(b"000chost:version").ok()?;
     let mut buf = [0u8; 16];
@@ -240,7 +240,7 @@ pub fn adb_probe(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Finding> {
     }
 }
 
-pub fn mqtt_anonymous(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Finding> {
+pub fn mqtt_anonymous(ip: IpAddr, port: u16, timeout_ms: u64) -> Option<Finding> {
     let to = Duration::from_millis(timeout_ms.max(100));
     let mut stream = tcp(ip, port, to)?;
     let mut vh = Vec::new();
@@ -281,7 +281,7 @@ pub fn mqtt_anonymous(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Findin
     }
 }
 
-pub fn coap_probe(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Finding> {
+pub fn coap_probe(ip: IpAddr, port: u16, timeout_ms: u64) -> Option<Finding> {
     let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
     let _ = sock.set_read_timeout(Some(Duration::from_millis(timeout_ms.clamp(100, 250))));
     let req = [
@@ -324,7 +324,7 @@ pub fn coap_probe(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Finding> {
 }
 
 /// NTP `monlist` (CVE-2013-5211): a single mode-7 request returns recent clients.
-pub fn ntp_probe(ip: Ipv4Addr, timeout_ms: u64) -> Option<Finding> {
+pub fn ntp_probe(ip: IpAddr, timeout_ms: u64) -> Option<Finding> {
     let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
     let _ = sock.set_read_timeout(Some(Duration::from_millis(timeout_ms.clamp(80, 250))));
     let request = [0x17u8, 0x00, 0x00, 0x00];
@@ -344,7 +344,7 @@ pub fn ntp_probe(ip: Ipv4Addr, timeout_ms: u64) -> Option<Finding> {
 }
 
 /// BACnet Who-Is / I-Am discovery on UDP 47808.
-pub fn bacnet_probe(ip: Ipv4Addr, timeout_ms: u64) -> Option<Finding> {
+pub fn bacnet_probe(ip: IpAddr, timeout_ms: u64) -> Option<Finding> {
     let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
     let _ = sock.set_read_timeout(Some(Duration::from_millis(timeout_ms.clamp(100, 250))));
     let request = [0x81u8, 0x0b, 0x00, 0x04, 0x10, 0x08];
@@ -365,7 +365,7 @@ pub fn bacnet_probe(ip: Ipv4Addr, timeout_ms: u64) -> Option<Finding> {
 }
 
 /// EtherNet/IP List Identity on UDP 44818.
-pub fn ethernet_ip_probe(ip: Ipv4Addr, timeout_ms: u64) -> Option<Finding> {
+pub fn ethernet_ip_probe(ip: IpAddr, timeout_ms: u64) -> Option<Finding> {
     let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
     let _ = sock.set_read_timeout(Some(Duration::from_millis(timeout_ms.clamp(100, 250))));
     let request = [
@@ -394,7 +394,7 @@ pub fn ethernet_ip_probe(ip: Ipv4Addr, timeout_ms: u64) -> Option<Finding> {
 }
 
 pub fn rtsp_request(
-    ip: Ipv4Addr,
+    ip: IpAddr,
     port: u16,
     method: &str,
     path: &str,
@@ -421,7 +421,7 @@ pub fn rtsp_request(
     )
 }
 
-pub fn rtsp_probe(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Finding> {
+pub fn rtsp_probe(ip: IpAddr, port: u16, timeout_ms: u64) -> Option<Finding> {
     let path = format!("rtsp://{}:{}/", ip, port);
     let resp = rtsp_request(ip, port, "OPTIONS", &path, None, timeout_ms)?;
     if resp.status == 200 || resp.body_text().contains("200 OK") {
@@ -436,7 +436,7 @@ pub fn rtsp_probe(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Finding> {
     }
 }
 
-pub fn modbus_probe(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Finding> {
+pub fn modbus_probe(ip: IpAddr, port: u16, timeout_ms: u64) -> Option<Finding> {
     let mut s = tcp(ip, port, Duration::from_millis(timeout_ms.max(100)))?;
     let pdu: &[u8] = &[0x2b, 0x0e, 0x01, 0x00];
     let mut packet = vec![0x12, 0x34, 0x00, 0x00, 0x00, 0x06, 0x01];
@@ -463,7 +463,7 @@ pub fn modbus_probe(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Option<Finding>
     Some(out)
 }
 
-pub fn http_unauth_api(ip: Ipv4Addr, port: u16, timeout_ms: u64) -> Vec<Finding> {
+pub fn http_unauth_api(ip: IpAddr, port: u16, timeout_ms: u64) -> Vec<Finding> {
     let mut out = Vec::new();
     let to = timeout_ms.max(100);
     if port == 2375 {
